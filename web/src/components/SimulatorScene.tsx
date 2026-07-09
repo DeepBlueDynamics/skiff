@@ -320,6 +320,7 @@ function SimulationLoop({ controlsRef }: { controlsRef: React.RefObject<any> }) 
           thrustStbd: data.control.thrust_stbd,
           stabilityState: data.stability_state,
           slamWarning: data.slam_warning,
+          simTimeS: data.elapsed_s,
         });
       }
     } catch (e) {

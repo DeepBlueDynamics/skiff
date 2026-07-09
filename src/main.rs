@@ -341,9 +341,44 @@ async fn main() -> anyhow::Result<()> {
             }
 
             let params = cat_physics::lagoon_450s();
+
+            // Canonical wave field (shared with the slam check below and with
+            // the frontend water surface — keep the three in lockstep):
+            //   ph = k·along − ω·t,  along = E·sin(dir) + N·cos(dir), k = 0.08
+            //   η   = H·(0.36·sin ph + 0.09·sin(1.7·ph + 0.8))   [display up +]
+            // Slopes feed the restoring targets so the hull rides the surface.
+            let wave_h = state.env.wave_height_m.unwrap_or(0.0);
+            let (wave_eta_disp, wave_pose) = if wave_h > 1.0e-3 {
+                let dir = state.env.wave_to_deg.unwrap_or(290.0).to_radians();
+                let period = state.env.wave_period_s.unwrap_or(7.0).max(1.0);
+                let k = 0.08;
+                let omega = std::f64::consts::TAU / period;
+                let along = state.local_pos_m.east * dir.sin() + state.local_pos_m.north * dir.cos();
+                let ph = k * along - omega * state.elapsed_s;
+                let eta_disp = wave_h * (0.36 * ph.sin() + 0.09 * (1.7 * ph + 0.8).sin());
+                let dslope = wave_h * k * (0.36 * ph.cos() + 0.153 * (1.7 * ph + 0.8).cos());
+                // Display-frame slope vector and body-axis components.
+                let (s_e, s_n) = (dslope * dir.sin(), dslope * dir.cos());
+                let hdg = state.heading_true_deg.to_radians();
+                let slope_bow = s_e * hdg.sin() + s_n * hdg.cos();
+                let slope_stbd = s_e * hdg.cos() - s_n * hdg.sin();
+                // Engine targets: eta2 = −η (bob = −eta2); heel_deg = φ is
+                // port-down-positive → surface higher to starboard tilts the
+                // hull port-down (+φ); pitch_deg = θ is bow-up-positive →
+                // surface rising toward the bow lifts it (+θ). Conventions
+                // measured via live wrench probes 2026-07-09.
+                (
+                    eta_disp,
+                    Some([-eta_disp, slope_stbd.atan(), slope_bow.atan()]),
+                )
+            } else {
+                (0.0, None)
+            };
+
             let env_phys = cat_physics::Environment {
                 wind_world: [state.env.wind_ground_mps.north, state.env.wind_ground_mps.east, 0.0],
                 current_world: [state.env.current_ground_mps.north, state.env.current_ground_mps.east, 0.0],
+                wave_pose,
             };
             let ctrl_phys = cat_physics::CatControl {
                 rudder_cmd: state.control.helm * params.rudder_max,
@@ -452,18 +487,9 @@ async fn main() -> anyhow::Result<()> {
             }
 
             // Wave height at location (needed for bridgedeck slam checking)
-            let wave_to_deg_env = state.env.wave_to_deg.unwrap_or(290.0);
-            let wave_height_m = state.env.wave_height_m.unwrap_or(0.8);
-            let wave_period_s = state.env.wave_period_s.unwrap_or(7.0);
-
-            let wave_rad = wave_to_deg_env.to_radians();
-            let along = state.local_pos_m.east * wave_rad.sin() + state.local_pos_m.north * wave_rad.cos();
-            let phase = along * 0.08 - (state.elapsed_s / wave_period_s) * std::f64::consts::PI * 2.0;
-            let wave_height = phase.sin() * wave_height_m * 0.36 + (phase * 1.7 + 0.8).sin() * wave_height_m * 0.09;
-
-            // Bridgedeck slam
+            // Bridgedeck slam — same canonical wave elevation computed pre-step.
             let underside = -params.bridgedeck_clearance + eta[2];
-            let penetration = wave_height - (-underside);
+            let penetration = wave_eta_disp - (-underside);
             state.slam_warning = penetration > 0.1 && state.stw_mps > 2.0;
 
             // Course classification from true TWA

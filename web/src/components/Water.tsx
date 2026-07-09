@@ -2,12 +2,28 @@ import { useFrame } from '@react-three/fiber';
 import { useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { useSimulator } from '../sim/store';
+import { waveElevation } from '../sim/math';
+
+// 10 m vertex grid over the 1000 m plane — smooth for the ~78 m primary
+// wavelength (k = 0.08) while keeping per-frame displacement cheap.
+const WATER_SEGMENTS = 100;
+const GRID_SNAP_M = 1000 / WATER_SEGMENTS;
 
 export function Water() {
   const meshRef = useRef<THREE.Mesh>(null);
   const boat = useSimulator((state) => state.boat);
+  const settings = useSimulator((state) => state.settings);
 
-  const geometry = useMemo(() => new THREE.PlaneGeometry(1000, 1000), []);
+  const geometry = useMemo(
+    () => new THREE.PlaneGeometry(1000, 1000, WATER_SEGMENTS, WATER_SEGMENTS),
+    []
+  );
+  // Wave phase runs on the BACKEND clock: snap to elapsed_s whenever a fresh
+  // poll sample lands, advance with local frame time in between. Using a
+  // purely local clock would drift the surface out of phase with the boat's
+  // backend-computed heave/pitch/roll.
+  const waveClock = useRef({ t: 0, lastSample: -1 });
+  const wasFlat = useRef(true);
 
   // Generate a procedural water bump map canvas texture
   const bumpTexture = useMemo(() => {
@@ -48,10 +64,44 @@ export function Water() {
     return texture;
   }, []);
 
-  useFrame((state) => {
+  useFrame((state, delta) => {
+    // Snap the plane to the vertex grid so following the boat doesn't make
+    // the displaced vertices swim.
+    const snapX = Math.round(boat.position.x / GRID_SNAP_M) * GRID_SNAP_M;
+    const snapZ = Math.round(-boat.position.y / GRID_SNAP_M) * GRID_SNAP_M;
     if (meshRef.current) {
-      meshRef.current.position.set(boat.position.x, 0, -boat.position.y);
+      meshRef.current.position.set(snapX, 0, snapZ);
     }
+
+    const clock = waveClock.current;
+    clock.t += Math.min(delta, 0.2);
+    const sample = boat.simTimeS;
+    if (sample !== undefined && sample !== clock.lastSample) {
+      clock.t = sample;
+      clock.lastSample = sample;
+    }
+
+    const { waveHeightM, wavePeriodS, waveToDeg } = settings;
+    const pos = geometry.attributes.position;
+    if (waveHeightM > 0.001) {
+      // Plane is rotated -π/2 about X: local x → world x (east), local y →
+      // world −z, local z (displacement) → world y (up). So for vertex i:
+      // east = snapX + x_i, north = −worldZ = y_i − snapZ.
+      for (let i = 0; i < pos.count; i++) {
+        const east = snapX + pos.getX(i);
+        const north = pos.getY(i) - snapZ;
+        pos.setZ(i, waveElevation(east, north, clock.t, waveHeightM, wavePeriodS, waveToDeg));
+      }
+      pos.needsUpdate = true;
+      geometry.computeVertexNormals();
+      wasFlat.current = false;
+    } else if (!wasFlat.current) {
+      for (let i = 0; i < pos.count; i++) pos.setZ(i, 0);
+      pos.needsUpdate = true;
+      geometry.computeVertexNormals();
+      wasFlat.current = true;
+    }
+
     if (bumpTexture) {
       // Gently drift the ripples over time
       const time = state.clock.getElapsedTime();

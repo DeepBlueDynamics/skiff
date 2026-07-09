@@ -98,6 +98,13 @@ pub struct CatState {
 pub struct Environment {
     pub wind_world: [f64; 3],
     pub current_world: [f64; 3],
+    /// Local wave-surface pose the hydrostatic restoring targets instead of
+    /// flat water: `[eta2_target, phi_target, theta_target]` in the engine's
+    /// own state conventions (η_display up-positive maps to `eta2 = −η`;
+    /// φ/θ targets are given directly in the readout conventions
+    /// `heel_deg = φ` port-down-positive, `pitch_deg = θ` bow-up-positive —
+    /// measured 2026-07-09 via live wrench probes). `None` = flat water.
+    pub wave_pose: Option<[f64; 3]>,
 }
 
 /// Cloth-sim sail wrench in body frame. `blend` ∈ [0, 1]: 1 = fully replace the
@@ -814,8 +821,18 @@ fn cat_derivative(
     // Damping
     let d_nu = damping_nu(&nu, p);
 
-    // Restoring
-    let g = cat_restoring(&eta, p);
+    // Restoring — about the local wave surface when a wave pose is provided
+    // (heave/roll/pitch springs target the surface elevation and slopes instead
+    // of flat water; this is what makes waves actually move the boat).
+    let g = if let Some(wp) = env.wave_pose {
+        let mut eta_rel = eta;
+        eta_rel[2] -= wp[0];
+        eta_rel[3] -= wp[1];
+        eta_rel[4] -= wp[2];
+        cat_restoring(&eta_rel, p)
+    } else {
+        cat_restoring(&eta, p)
+    };
 
     // Acceleration nu_dot
     let mut nu_dot = [0.0; 6];
@@ -1196,6 +1213,7 @@ mod tests {
                 0.55 * 85.0f64.to_radians().sin(),
                 0.0,
             ],
+            wave_pose: None,
         };
         let mut st = CatState {
             eta: [0.0, 0.0, 0.0, 0.0, 0.0, 20.0f64.to_radians()],
@@ -1241,6 +1259,7 @@ mod tests {
         Environment {
             wind_world: [0.0; 3],
             current_world: [0.0; 3],
+            wave_pose: None,
         }
     }
 
@@ -1303,5 +1322,46 @@ mod tests {
             "+f_y (starboard by contract) displaced the boat on bearing {bearing_deg}° \
              from heading 0 — expected starboard half-plane (10°..170°); dist {dist} m"
         );
+    }
+
+    /// Waves must MOVE the boat: with a wave pose supplied, the hydrostatic
+    /// springs target the local surface, so the hull settles onto it —
+    /// heave to the elevation, roll/pitch to the slopes.
+    #[test]
+    fn wave_pose_drives_heave_roll_and_pitch() {
+        let p = lagoon_450s();
+        // Static tilted surface: η = +0.5 m (display up), φ target +0.05 rad
+        // (port-down), θ target −0.08 rad (bow-down). eta2 target = −η.
+        let env = Environment {
+            wind_world: [0.0; 3],
+            current_world: [0.0; 3],
+            wave_pose: Some([-0.5, 0.05, -0.08]),
+        };
+        let mut st = rest_state_heading_zero();
+        for _ in 0..600 {
+            st = cat_step(&st, &neutral_ctrl(), &env, &p, 0.05, None);
+        }
+        let bob = -st.eta[2];
+        assert!(
+            (bob - 0.5).abs() < 0.1,
+            "hull should ride up to the 0.5 m surface, bob = {bob} m"
+        );
+        assert!(
+            (st.eta[3] - 0.05).abs() < 0.02,
+            "roll should settle to the transverse slope, phi = {} rad",
+            st.eta[3]
+        );
+        assert!(
+            (st.eta[4] + 0.08).abs() < 0.02,
+            "pitch should settle to the longitudinal slope, theta = {} rad",
+            st.eta[4]
+        );
+        // And flat water must leave the boat untouched.
+        let flat = dead_calm();
+        let mut st2 = rest_state_heading_zero();
+        for _ in 0..200 {
+            st2 = cat_step(&st2, &neutral_ctrl(), &flat, &p, 0.05, None);
+        }
+        assert!(st2.eta[2].abs() < 1e-6 && st2.eta[3].abs() < 1e-6);
     }
 }

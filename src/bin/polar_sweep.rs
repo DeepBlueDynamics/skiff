@@ -162,6 +162,7 @@ fn run_case(
             0.0,
         ],
         current_world: [0.0, 0.0, 0.0],
+        wave_pose: None,
     };
 
     // heading_true = (−ψ)·180/π ⇒ ψ = −heading for heading 0°.

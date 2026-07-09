@@ -69,6 +69,29 @@ export function boatOverGround(boatWater: Vec2, currentGround: Vec2): Vec2 {
   return add(boatWater, currentGround);
 }
 
+/**
+ * Canonical wave elevation (metres, up-positive) at a display-frame position.
+ * MUST stay in lockstep with the backend physics loop (src/main.rs wave pose
+ * + bridgedeck slam) — the backend drives the boat's heave/pitch/roll from
+ * this exact field, so any formula drift makes the boat float above or
+ * tunnel through the rendered surface. `t` is the BACKEND clock (elapsed_s).
+ */
+export function waveElevation(
+  east: number,
+  north: number,
+  t: number,
+  waveHeightM: number,
+  wavePeriodS: number,
+  waveToDeg: number
+): number {
+  if (waveHeightM <= 0.001) return 0;
+  const dir = degToRad(waveToDeg);
+  const along = east * Math.sin(dir) + north * Math.cos(dir);
+  const ph = 0.08 * along - (t / Math.max(1, wavePeriodS)) * Math.PI * 2;
+  return waveHeightM * (0.36 * Math.sin(ph) + 0.09 * Math.sin(1.7 * ph + 0.8));
+}
+
+/** Scene-coordinate wrapper (scene x = east, scene z = −north). */
 export function getWaveHeight(
   x: number,
   z: number,
@@ -77,14 +100,5 @@ export function getWaveHeight(
   wavePeriodS: number,
   waveToDeg: number
 ): number {
-  const dir = degToRad(waveToDeg);
-  const sx = Math.sin(dir);
-  const sz = Math.cos(dir);
-  const amp = waveHeightM * 0.42;
-  const period = Math.max(1, wavePeriodS);
-  const along = x * sx + z * sz;
-  return (
-    Math.sin(along * 0.08 - (t / period) * Math.PI * 2) * amp +
-    Math.sin(x * 0.035 + z * 0.052 - t * 0.65) * amp * 0.22
-  );
+  return waveElevation(x, -z, t, waveHeightM, wavePeriodS, waveToDeg);
 }

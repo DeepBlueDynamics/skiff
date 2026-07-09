@@ -38,6 +38,10 @@ export type BoatState = {
   thrustStbd?: number;
   stabilityState?: string;
   slamWarning?: boolean;
+  /** Backend physics clock (elapsed_s) — wave phase must use THIS, not a
+   *  local accumulator, or the water surface drifts out of sync with the
+   *  boat's backend-computed heave/pitch/roll. */
+  simTimeS?: number;
 };
 
 export type SimSettings = {
