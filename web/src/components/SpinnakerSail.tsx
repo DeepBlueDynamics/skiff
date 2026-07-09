@@ -436,6 +436,28 @@ export function SpinnakerSail() {
     const windVelocity = AW_world.clone().applyQuaternion(q_inv);
     const windWorldDeg = (Math.atan2(AW_world.x, -AW_world.z) * 180 / Math.PI + 360) % 360;
 
+    // Compute local apparent wind angle (attack angle) relative to sail mean plane
+    const uCurr = new THREE.Vector3().subVectors(parts[tackI].pos, parts[headI].pos);
+    const vCurr = new THREE.Vector3().subVectors(parts[clewI].pos, parts[headI].pos);
+    const meanNormal = new THREE.Vector3().crossVectors(uCurr, vCurr).normalize();
+
+    let luffFactor = 1.0;
+    const windSpeedLocal = windVelocity.length();
+    if (windSpeedLocal > 1e-4) {
+      const windNorm = windVelocity.clone().normalize();
+      const sinAttack = Math.abs(windNorm.dot(meanNormal));
+      const attackAngle = Math.asin(Math.min(1.0, sinAttack)) * 180 / Math.PI;
+
+      if (attackAngle < 10) {
+        luffFactor = 0.15;
+      } else if (attackAngle < 30) {
+        const t = (attackAngle - 10) / 20;
+        luffFactor = 0.15 + 0.85 * t;
+      }
+    } else {
+      luffFactor = 0.15;
+    }
+
     // Rotate gravity world-down (0, -9.8, 0) into the heeled/pitched boat local frame,
     // and then apply the Math.PI rotation around Y for the sail's coordinate system wrapper.
     const pitchRad = (currentSimState.boat.pitchDeg || 0) * Math.PI / 180;
@@ -513,11 +535,18 @@ export function SpinnakerSail() {
       let totalForceWeight = 0;
 
       for (let sub = 0; sub < SUBSTEPS; sub++) {
-        // Initialize forces (gravity + windage)
+        // Initialize forces (gravity + windage + flutter noise)
+        const noiseMag = 28.0 * (1.0 - luffFactor) * windVelocity.length();
         for (let i = 0; i < parts.length; i++) {
           const p = parts[i];
           const m = i < clothCount ? MASS : 0.05; // rope nodes are 0.05kg in the reference
           p.force.copy(gravityLocal).multiplyScalar(m);
+
+          if (i < clothCount && luffFactor < 0.99) {
+            p.force.x += (Math.random() - 0.5) * noiseMag * m;
+            p.force.y += (Math.random() - 0.5) * noiseMag * m;
+            p.force.z += (Math.random() - 0.5) * noiseMag * m;
+          }
         }
 
         const substepForce = new THREE.Vector3();
@@ -559,7 +588,7 @@ export function SpinnakerSail() {
             const rz = windVelocity.z - vz;
             
             const vn = rx * nrm.x + ry * nrm.y + rz * nrm.z;
-            const q = 0.5 * 1.225 * Cp * vn * Math.abs(vn);
+            const q = 0.5 * 1.225 * Cp * vn * Math.abs(vn) * luffFactor;
             
             // Total aerodynamic force vector on the triangle (not divided by 3)
             const fTri = nrm.clone().multiplyScalar(q * area);
