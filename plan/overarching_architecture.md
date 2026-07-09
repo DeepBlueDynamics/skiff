@@ -36,7 +36,8 @@ Violating this section is how force signs flip and boats sail backwards. All new
 
 | Frame | Axes | Where |
 |---|---|---|
-| **Body (backend)** | +X forward, +Y starboard, +Z down (NED-ish). Euler φ heel, θ pitch, ψ yaw | `cat_physics.rs` `eta`/`nu` |
+| **Body / CONTRACT (API)** | +X forward, +Y starboard, +Z down (NED-ish). This is the frame `/v1/sim/sail_wrench` accepts and `gltf_vec_to_body` targets | wire format of `f_body`/`tau_body` |
+| **Engine (integrator)** | **y-MIRROR of the contract frame** (lateral axis flipped; MEASURED 2026-07-09 via `cloth_positive_*` frame-probe tests: +f_y drifts the boat to display-PORT, +τ_z yaws the bow to display-PORT). The legacy readout negations (`heading = −ψ`, `cog = atan2(−E,N)`, `leeway = atan2(−v,u)`) all compensate for this same mirror. External wrenches cross the boundary through `contract_wrench_to_engine`: `F → [fx, −fy, fz]`, `τ → [−τx, τy, −τz]` (torque is a pseudovector). NEVER inject a contract-frame force/torque into `cat_step`/`cat_forces` without it — an un-mirrored lee-helm torque drives the bow INTO the wind (shipped once: 28° rudder AP fight, wake on the wrong side) | `cat_physics.rs` `eta`/`nu` |
 | **Sail/glTF (frontend)** | **+X PORT**, +Y up, +Z toward bow (tack ring at z≈+7.32). Right-handed: x = up×bow = port. (CORRECTED 2026-07-09 — this table previously said "+X starboard", which seeded a mirrored wrench map; see `plan/sail-fixes-round2.md`) | raw GLB coords; `SpinnakerSail` operates here |
 | **Scene (frontend)** | three.js world; boat group applies `rotation=[pitch, -heading, heel]`; the GLB and the sail sim both sit inside an extra `rotation=[0, π, 0]` wrapper | `BoatModel.tsx` |
 
@@ -48,7 +49,7 @@ v_body = [ v_gltf.z,  -v_gltf.x,  -v_gltf.y ]      // stbd = −port
 
 Required unit tests: bow → +surge; **port → −starboard**; up → −down; and the mapping matrix determinant is **+1** (a det = −1 map is a reflection and mirrors every side force, heel, and yaw moment — this exact bug shipped once).
 
-Backend quirks (self-consistent, keep, do not "fix" silently): `heading_true_deg = (−ψ)·180/π mod 360`; `cog = atan2(−E, N)`. These are documented here so nobody adds a fourth convention.
+Backend quirks (self-consistent, keep, do not "fix" silently): `heading_true_deg = (−ψ)·180/π mod 360`; `cog = atan2(−E, N)`; `leeway_deg = atan2(−v, u)` (positive = drifting to starboard). These are not arbitrary — they are the readout half of the engine's y-mirror (see table above). Removing any single one, or injecting an external force without `contract_wrench_to_engine`, reintroduces the mirror bug on that one path while everything else still looks right.
 
 ### 2.2 Wind
 

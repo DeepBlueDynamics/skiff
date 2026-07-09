@@ -97,6 +97,17 @@ pub struct FullSimState {
     pub cat_state: cat_physics::CatState,
     #[serde(default)]
     pub manual_env_override: bool,
+    /// Applied cloth sail force (body frame, N). Zeros while the coefficient
+    /// sail is active (no fresh cloth wrench).
+    #[serde(default)]
+    pub sail_f_body: [f64; 3],
+    /// Applied cloth sail torque about the CG (body frame, N·m).
+    /// Index 2 is yaw: POSITIVE = bow pushed to STARBOARD.
+    #[serde(default)]
+    pub sail_tau_cg: [f64; 3],
+    /// 1 = pure cloth wrench, 0 = pure coefficient model.
+    #[serde(default)]
+    pub sail_blend: f64,
 }
 
 /// Fresh cloth wrench is used while younger than this; then blended out over
@@ -165,7 +176,9 @@ fn create_initial_state() -> FullSimState {
 
     let initial_heading_rad = 20.0f64.to_radians();
     let cat_state = cat_physics::CatState {
-        eta: [0.0, 0.0, 0.0, 0.0, 0.0, initial_heading_rad],
+        // Display heading = (−ψ) mod 360 (same convention as post_reset), so
+        // spawn at display heading 20° means ψ = −20°.
+        eta: [0.0, 0.0, 0.0, 0.0, 0.0, -initial_heading_rad],
         nu: [0.0; 6],
         rudder: 0.0,
         stability: cat_physics::StabilityState::Upright,
@@ -206,6 +219,9 @@ fn create_initial_state() -> FullSimState {
         slam_warning: false,
         cat_state,
         manual_env_override: false,
+        sail_f_body: [0.0; 3],
+        sail_tau_cg: [0.0; 3],
+        sail_blend: 0.0,
     }
 }
 
@@ -310,6 +326,20 @@ async fn main() -> anyhow::Result<()> {
             state.elapsed_s += dt;
             state.at = Utc::now();
 
+            // Applied-sail-wrench telemetry: what the cloth (when fresh) is
+            // actually injecting, with torque shifted to the CG exactly as the
+            // physics sees it. sail_tau_cg[2] positive = bow to starboard.
+            if let Some(ov) = sail_override {
+                let w = cat_physics::cloth_wrench_to_cg(ov.f_body, ov.tau_body);
+                state.sail_f_body = ov.f_body;
+                state.sail_tau_cg = [w[3], w[4], w[5]];
+                state.sail_blend = ov.blend;
+            } else {
+                state.sail_f_body = [0.0; 3];
+                state.sail_tau_cg = [0.0; 3];
+                state.sail_blend = 0.0;
+            }
+
             let params = cat_physics::lagoon_450s();
             let env_phys = cat_physics::Environment {
                 wind_world: [state.env.wind_ground_mps.north, state.env.wind_ground_mps.east, 0.0],
@@ -379,6 +409,10 @@ async fn main() -> anyhow::Result<()> {
             state.heel_deg = phi.to_degrees();
             state.pitch_deg = theta.to_degrees();
             state.bob_m = -eta[2]; // NED down: bob height is negative of z
+            // Leeway sign convention: POSITIVE = drifting to starboard, so the
+            // water track = heading + leeway (compass). Engine body frame has
+            // +y = PORT (measured; see cat_physics frame-probe tests), so
+            // starboard drift is nu[1] < 0 — hence the negation.
             state.leeway_deg = (-nu[1]).atan2(nu[0].max(1.0e-3)).to_degrees();
 
             // Apparent wind (body frame at mast CE height)
@@ -653,7 +687,15 @@ async fn post_sail_wrench(
     let f_mag = (req.f_body[0].powi(2) + req.f_body[1].powi(2) + req.f_body[2].powi(2)).sqrt();
     let t_mag = (req.tau_body[0].powi(2) + req.tau_body[1].powi(2) + req.tau_body[2].powi(2)).sqrt();
     if !finite || f_mag > WRENCH_MAX_FORCE_N || t_mag > WRENCH_MAX_TORQUE_NM {
-        tracing::warn!(seq = req.seq, f_mag, t_mag, finite, "rejected insane sail wrench");
+        // Rate-limited: at 15 Hz a misbehaving cloth floods the log otherwise.
+        static REJECTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = REJECTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if n % 75 == 0 {
+            tracing::warn!(
+                seq = req.seq, f_mag, t_mag, finite, total_rejected = n + 1,
+                "rejected insane sail wrench (showing 1 in 75)"
+            );
+        }
         return StatusCode::UNPROCESSABLE_ENTITY;
     }
     let mut wrench = state.sail_wrench.write().unwrap();

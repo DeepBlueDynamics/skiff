@@ -12,8 +12,15 @@ const DRAG = 0.998;
 const ITER = 6;
 const MAX_VEL = 0.4;
 const SAIL_MASS_TOTAL = 25; // kg, spread over all particles
+const K_BEND = 0.15;
+const K_FOLD_BARRIER = 0.25;
+const K_COMPRESS = 0.35;
+const K_TAPE2 = 0.35;
+const TAPE_REST_FACTOR = 0.998;
 
 const WELD_EPS = 1e-3;
+const COLLISION_DISTANCE = 0.10;
+const COLLISION_DISTANCE_SQ = COLLISION_DISTANCE * COLLISION_DISTANCE;
 
 // Rig attachment points (glTF frame, boat-local — verified against lagoon-450s.glb)
 const TACK_ANCHOR = new THREE.Vector3(-0.041, 2.028, 7.321); // Object.541 tack ring on the bowsprit
@@ -40,8 +47,19 @@ class Particle {
   }
 }
 
-type Spring = [number, number, number, boolean, number];
-// [partA, partB, restLen, isRope, baseLen]
+type SpringKind = 'cloth' | 'tape' | 'bend' | 'tape2' | 'rope';
+type Spring = [number, number, number, SpringKind, number];
+// [partA, partB, restLen, kind, baseLen]
+
+export interface SailFormTelemetry {
+  meanStrain: number;
+  normalCoherence: number;
+  foldEdgeCount: number;
+  maxRestDeviation: number;
+  luffSagM: number;
+  camberM: number;
+  restCamberM: number;
+}
 
 export function SpinnakerSail() {
   const settings = useSimulator((state) => state.settings);
@@ -141,37 +159,34 @@ export function SpinnakerSail() {
       }
     }
 
-    // Flatten all particles' rest positions onto the plane defined by head, tack, and clew
+    // Preserve the authored 3D flown shape as the physical rest shape.
     const pHead = parts[headI].rest.clone();
     const pTack = parts[tackI].rest.clone();
     const pClew = parts[clewI].rest.clone();
-
     const uVec = new THREE.Vector3().subVectors(pTack, pHead);
     const wVec = new THREE.Vector3().subVectors(pClew, pHead);
     const planeNormal = new THREE.Vector3().crossVectors(uVec, wVec).normalize();
-
+    let restCamberM = 0;
     for (const p of parts) {
       const diff = new THREE.Vector3().subVectors(p.rest, pHead);
-      const dotVal = diff.dot(planeNormal);
-      p.rest.addScaledVector(planeNormal, -dotVal);
-      p.pos.copy(p.rest);
-      p.prev.copy(p.rest);
-      p.target.copy(p.rest);
+      restCamberM = Math.max(restCamberM, Math.abs(diff.dot(planeNormal)));
     }
 
-    // Unique triangles + unique edge springs from mesh topology (using flattened rest)
+    // Build welded triangles and edge topology. Boundary count-1 edges become
+    // snug tapes; shared edges also provide opposite-vertex bend springs.
     const index = geometry.index!;
     const triangles: number[] = [];
     const springs: Spring[] = [];
-    const edgeSeen = new Set<number>();
-    const addSpring = (a: number, b: number) => {
-      const lo = Math.min(a, b);
-      const hi = Math.max(a, b);
-      const ek = lo * clothCount + hi;
-      if (edgeSeen.has(ek)) return;
-      edgeSeen.add(ek);
-      const baseLen = parts[a].rest.distanceTo(parts[b].rest);
-      springs.push([a, b, baseLen, false, baseLen]);
+    const getEdgeKey = (a: number, b: number) => a < b ? `${a}_${b}` : `${b}_${a}`;
+    const edgeTopology = new Map<string, { a: number; b: number; opposites: number[] }>();
+    const recordEdge = (a: number, b: number, opposite: number) => {
+      const key = getEdgeKey(a, b);
+      const edge = edgeTopology.get(key);
+      if (edge) {
+        edge.opposites.push(opposite);
+      } else {
+        edgeTopology.set(key, { a, b, opposites: [opposite] });
+      }
     };
     for (let t = 0; t < index.count; t += 3) {
       const a = weldMap[index.getX(t)];
@@ -179,70 +194,61 @@ export function SpinnakerSail() {
       const c = weldMap[index.getX(t + 2)];
       if (a === b || b === c || a === c) continue;
       triangles.push(a, b, c);
-      addSpring(a, b);
-      addSpring(b, c);
-      addSpring(c, a);
+      recordEdge(a, b, c);
+      recordEdge(b, c, a);
+      recordEdge(c, a, b);
+    }
+
+    const boundaryAdj = new Map<number, number[]>();
+    for (const edge of edgeTopology.values()) {
+      const baseLen = parts[edge.a].rest.distanceTo(parts[edge.b].rest);
+      const isBoundary = edge.opposites.length === 1;
+      springs.push([edge.a, edge.b, baseLen, isBoundary ? 'tape' : 'cloth', baseLen]);
+      if (isBoundary) {
+        if (!boundaryAdj.has(edge.a)) boundaryAdj.set(edge.a, []);
+        if (!boundaryAdj.has(edge.b)) boundaryAdj.set(edge.b, []);
+        boundaryAdj.get(edge.a)!.push(edge.b);
+        boundaryAdj.get(edge.b)!.push(edge.a);
+      }
+    }
+
+    for (const edge of edgeTopology.values()) {
+      if (edge.opposites.length !== 2) continue;
+      const [a, b] = edge.opposites;
+      if (a === b) continue;
+      const baseLen = parts[a].rest.distanceTo(parts[b].rest);
+      springs.push([a, b, baseLen, 'bend', baseLen]);
+    }
+
+    const findBoundaryPath = (start: number, end: number, blocked: number) => {
+      const visited = new Set<number>([start, blocked]);
+      const queue: number[][] = [[start]];
+      while (queue.length > 0) {
+        const path = queue.shift()!;
+        const current = path[path.length - 1];
+        if (current === end) return path;
+        for (const neighbor of boundaryAdj.get(current) ?? []) {
+          if (!visited.has(neighbor)) {
+            visited.add(neighbor);
+            queue.push([...path, neighbor]);
+          }
+        }
+      }
+      return [];
+    };
+
+    const luffNodes = findBoundaryPath(headI, tackI, clewI);
+    const leechNodes = findBoundaryPath(headI, clewI, tackI);
+    const footNodes = findBoundaryPath(tackI, clewI, headI);
+    for (const tapeNodes of [luffNodes, leechNodes, footNodes]) {
+      for (let i = 1; i < tapeNodes.length - 1; i++) {
+        const a = tapeNodes[i - 1];
+        const b = tapeNodes[i + 1];
+        const baseLen = parts[a].rest.distanceTo(parts[b].rest);
+        springs.push([a, b, baseLen, 'tape2', baseLen]);
+      }
     }
     const clothSpringCount = springs.length;
-
-    // Topological luff edge identification
-    const edgeCounts = new Map<string, { a: number; b: number; count: number }>();
-    const getEdgeKey = (a: number, b: number) => a < b ? `${a}_${b}` : `${b}_${a}`;
-    
-    for (let t = 0; t < triangles.length; t += 3) {
-      const ta = triangles[t];
-      const tb = triangles[t + 1];
-      const tc = triangles[t + 2];
-      
-      const edges = [
-        [ta, tb],
-        [tb, tc],
-        [tc, ta]
-      ];
-      
-      for (const [ea, eb] of edges) {
-        const key = getEdgeKey(ea, eb);
-        const entry = edgeCounts.get(key);
-        if (entry) {
-          entry.count++;
-        } else {
-          edgeCounts.set(key, { a: ea, b: eb, count: 1 });
-        }
-      }
-    }
-    
-    const boundaryAdj = new Map<number, number[]>();
-    for (const { a, b, count } of edgeCounts.values()) {
-      if (count === 1) {
-        if (!boundaryAdj.has(a)) boundaryAdj.set(a, []);
-        if (!boundaryAdj.has(b)) boundaryAdj.set(b, []);
-        boundaryAdj.get(a)!.push(b);
-        boundaryAdj.get(b)!.push(a);
-      }
-    }
-    
-    const visited = new Set<number>();
-    visited.add(clewI);
-    visited.add(headI);
-    
-    const queue: number[][] = [[headI]];
-    let luffNodes: number[] = [];
-    
-    while (queue.length > 0) {
-      const path = queue.shift()!;
-      const curr = path[path.length - 1];
-      if (curr === tackI) {
-        luffNodes = path;
-        break;
-      }
-      const neighbors = boundaryAdj.get(curr) || [];
-      for (const n of neighbors) {
-        if (!visited.has(n)) {
-          visited.add(n);
-          queue.push([...path, n]);
-        }
-      }
-    }
 
     // Setup color attribute on geometry for pressure shading
     const colors = new Float32Array(geometry.getAttribute('position').count * 3).fill(0.92);
@@ -274,7 +280,7 @@ export function SpinnakerSail() {
         const a = nodes[k];
         const b = nodes[k + 1];
         const baseLen = parts[a].pos.distanceTo(parts[b].pos);
-        springs.push([a, b, baseLen, true, baseLen]);
+        springs.push([a, b, baseLen, 'rope', baseLen]);
         springIndices.push(springs.length - 1);
       }
       const baseSegLen = corner.distanceTo(anchorPos) / ROPE_SEG;
@@ -283,6 +289,29 @@ export function SpinnakerSail() {
 
     const tackRope = buildRope(tackI, TACK_ANCHOR);
     const clewRope = buildRope(clewI, CLEW_ANCHOR);
+
+    const headAnchor = parts[headI].rest;
+    const mastBase = new THREE.Vector3(headAnchor.x, 2.0, headAnchor.z);
+    const rigCapsules = [
+      { a: mastBase, b: headAnchor, r: 0.16 },
+      { a: headAnchor, b: TACK_ANCHOR, r: 0.06 },
+    ];
+    const capsuleExemptions = rigCapsules.map(() => new Uint8Array(parts.length));
+    for (let capsuleIndex = 0; capsuleIndex < rigCapsules.length; capsuleIndex++) {
+      const capsule = rigCapsules[capsuleIndex];
+      const segment = new THREE.Vector3().subVectors(capsule.b, capsule.a);
+      const segmentLengthSq = segment.lengthSq();
+      for (let particleIndex = 0; particleIndex < parts.length; particleIndex++) {
+        const fromStart = new THREE.Vector3().subVectors(parts[particleIndex].rest, capsule.a);
+        const t = segmentLengthSq > 1e-9
+          ? Math.max(0, Math.min(1, fromStart.dot(segment) / segmentLengthSq))
+          : 0;
+        const closest = new THREE.Vector3().copy(capsule.a).addScaledVector(segment, t);
+        if (parts[particleIndex].rest.distanceTo(closest) <= capsule.r + COLLISION_DISTANCE) {
+          capsuleExemptions[capsuleIndex][particleIndex] = 1;
+        }
+      }
+    }
 
     const material = (Array.isArray(src.material) ? src.material[0] : src.material).clone();
     material.side = THREE.DoubleSide;
@@ -314,13 +343,20 @@ export function SpinnakerSail() {
     }
 
     const sharedEdgesList: number[] = [];
-    for (const list of edgeTriangles.values()) {
+    const sharedEdgeVerticesList: number[] = [];
+    const sharedEdgeOppositesList: number[] = [];
+    for (const [edgeKey, list] of edgeTriangles.entries()) {
       if (list.length === 2) {
         sharedEdgesList.push(list[0], list[1]);
+        const [a, b] = edgeKey.split('_').map(Number);
+        sharedEdgeVerticesList.push(a, b);
+        sharedEdgeOppositesList.push(...edgeTopology.get(edgeKey)!.opposites);
       }
     }
     const sharedEdgeCount = sharedEdgesList.length / 2;
     const sharedEdgesArray = new Int32Array(sharedEdgesList);
+    const sharedEdgeVerticesArray = new Int32Array(sharedEdgeVerticesList);
+    const sharedEdgeOppositesArray = new Int32Array(sharedEdgeOppositesList);
 
     // Preallocated arrays for self-collision spatial hash & normal coherence
     const HASH_SIZE = 1024;
@@ -329,13 +365,11 @@ export function SpinnakerSail() {
     const neighborMatrix = new Uint8Array(clothCount * clothCount);
     const triNormals = new Float32Array((triangles.length / 3) * 3);
 
-    // Build neighbor matrix from cloth springs
-    for (let i = 0; i < clothSpringCount; i++) {
-      const s = springs[i];
-      if (s[0] < clothCount && s[1] < clothCount) {
-        neighborMatrix[s[0] * clothCount + s[1]] = 1;
-        neighborMatrix[s[1] * clothCount + s[0]] = 1;
-      }
+    // Only mesh-edge neighbors are collision-exempt. Bend/tape2 constraints
+    // span the cloth and must not disable collision for the vertices they brace.
+    for (const edge of edgeTopology.values()) {
+      neighborMatrix[edge.a * clothCount + edge.b] = 1;
+      neighborMatrix[edge.b * clothCount + edge.a] = 1;
     }
 
     return {
@@ -356,11 +390,16 @@ export function SpinnakerSail() {
       geometry,
       material,
       sharedEdgesArray,
+      sharedEdgeVerticesArray,
+      sharedEdgeOppositesArray,
       sharedEdgeCount,
       collisionHead,
       collisionNext,
       neighborMatrix,
       triNormals,
+      restCamberM,
+      rigCapsules,
+      capsuleExemptions,
     };
   }, [jibScene, sheetSide]);
 
@@ -375,6 +414,7 @@ export function SpinnakerSail() {
   const seqRef = useRef(0);
   const hasLoggedCrumpled = useRef(false);
   const tangleTimer = useRef(0);
+  const watchdogResetCount = useRef(0);
 
   const tackLineMesh = useMemo(() => new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0x7ce0a0 })), []);
   const clewLineMesh = useMemo(() => new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffd166 })), []);
@@ -427,7 +467,7 @@ export function SpinnakerSail() {
   // Update physics at 60fps
   useFrame((state, delta) => {
     if (!alignedReady.current) return;
-    const { parts, springs, clothSpringCount, triangles, clothCount, weldMap, MASS, headI, tackI, clewI, luffNodes, tackRope, clewRope, geometry, sharedEdgesArray, sharedEdgeCount, collisionHead, collisionNext, neighborMatrix, triNormals } = sim;
+    const { parts, springs, clothSpringCount, triangles, clothCount, weldMap, MASS, headI, tackI, clewI, luffNodes, tackRope, clewRope, geometry, sharedEdgesArray, sharedEdgeVerticesArray, sharedEdgeOppositesArray, sharedEdgeCount, collisionHead, collisionNext, neighborMatrix, triNormals, rigCapsules, capsuleExemptions } = sim;
 
     const currentSimState = useSimulator.getState();
     const currentSettings = currentSimState.settings;
@@ -519,9 +559,13 @@ export function SpinnakerSail() {
       springs[idx][2] = clewRope.baseSegLen * clewSlackFactor;
     });
 
-    // Update cloth fullness rest lengths
+    // Fullness belongs to the interior. Boundary tapes and their second-neighbor
+    // braces remain slightly snug so the perimeter cannot accumulate slack.
     for (let i = 0; i < clothSpringCount; i++) {
-      springs[i][2] = springs[i][4] * sailFullnessFactor;
+      const spring = springs[i];
+      spring[2] = spring[3] === 'tape' || spring[3] === 'tape2'
+        ? spring[4] * TAPE_REST_FACTOR
+        : spring[4] * sailFullnessFactor;
     }
 
     // Dynamic forestay luff pinning
@@ -553,12 +597,18 @@ export function SpinnakerSail() {
     
     let stepped = false;
     let lastMeanStretch = 0;
+    let publishFormTelemetry = false;
 
     const tmp = new THREE.Vector3();
     const tmp2 = new THREE.Vector3();
     const ab = new THREE.Vector3();
     const ac = new THREE.Vector3();
     const nrm = new THREE.Vector3();
+    const hingeEdge = new THREE.Vector3();
+    const hingeMidpoint = new THREE.Vector3();
+    const hingeA = new THREE.Vector3();
+    const hingeB = new THREE.Vector3();
+    const hingeCommon = new THREE.Vector3();
 
     // Particle pressures for vertex shading
     const particlePressure = new Float32Array(clothCount);
@@ -689,14 +739,51 @@ export function SpinnakerSail() {
             tmp.subVectors(p2.pos, p1.pos);
             const d = tmp.length();
             if (d < 1e-4) continue;
-            if (s[3] && d <= rest) continue; // rope only pulls
+            const kind = s[3];
+            if (kind === 'rope' && d <= rest) continue; // rope only pulls
             const m1 = p1.pinned ? 0 : 1;
             const m2 = p2.pinned ? 0 : 1;
             const sum = m1 + m2;
             if (sum === 0) continue;
-            const f = (1 - rest / d) / sum;
+            let stiffness = 1;
+            if (kind === 'bend') stiffness = K_BEND;
+            else if (kind === 'tape2') stiffness = K_TAPE2;
+            else if (kind !== 'rope' && d < rest) stiffness = K_COMPRESS;
+            const f = (1 - rest / d) * stiffness / sum;
             if (m1) p1.pos.addScaledVector(tmp, f);
             if (m2) p2.pos.addScaledVector(tmp, -f);
+          }
+
+          // Distance-only cross springs have a mirrored hinge solution. Once
+          // opposite vertices cross to the same side of their shared edge,
+          // remove the common perpendicular component to unfold the hinge.
+          for (let i = 0; i < sharedEdgeCount; i++) {
+            const edgeA = parts[sharedEdgeVerticesArray[i * 2]];
+            const edgeB = parts[sharedEdgeVerticesArray[i * 2 + 1]];
+            const oppositeA = parts[sharedEdgeOppositesArray[i * 2]];
+            const oppositeB = parts[sharedEdgeOppositesArray[i * 2 + 1]];
+            hingeEdge.subVectors(edgeB.pos, edgeA.pos);
+            const edgeLengthSq = hingeEdge.lengthSq();
+            if (edgeLengthSq < 1e-8) continue;
+            hingeMidpoint.addVectors(edgeA.pos, edgeB.pos).multiplyScalar(0.5);
+            hingeA.subVectors(oppositeA.pos, hingeMidpoint);
+            hingeA.addScaledVector(hingeEdge, -hingeA.dot(hingeEdge) / edgeLengthSq);
+            hingeB.subVectors(oppositeB.pos, hingeMidpoint);
+            hingeB.addScaledVector(hingeEdge, -hingeB.dot(hingeEdge) / edgeLengthSq);
+            if (hingeA.dot(hingeB) < 0) continue;
+
+            const wa = edgeA.pinned ? 0 : 1;
+            const wb = edgeB.pinned ? 0 : 1;
+            const wp = oppositeA.pinned ? 0 : 1;
+            const wq = oppositeB.pinned ? 0 : 1;
+            const weightSum = wa + wb + wp + wq;
+            if (weightSum === 0) continue;
+            hingeCommon.addVectors(hingeA, hingeB).multiplyScalar(0.5);
+            const correctionScale = 2 * K_FOLD_BARRIER / weightSum;
+            if (wa) edgeA.pos.addScaledVector(hingeCommon, wa * correctionScale);
+            if (wb) edgeB.pos.addScaledVector(hingeCommon, wb * correctionScale);
+            if (wp) oppositeA.pos.addScaledVector(hingeCommon, -wp * correctionScale);
+            if (wq) oppositeB.pos.addScaledVector(hingeCommon, -wq * correctionScale);
           }
           for (const p of parts) {
             if (p.pinned) p.pos.copy(p.target);
@@ -710,20 +797,20 @@ export function SpinnakerSail() {
         // 1. Build spatial hash over cloth particles each substep
         for (let i = 0; i < clothCount; i++) {
           const p = parts[i];
-          const gx = Math.floor(p.pos.x / 0.10);
-          const gy = Math.floor(p.pos.y / 0.10);
-          const gz = Math.floor(p.pos.z / 0.10);
+          const gx = Math.floor(p.pos.x / COLLISION_DISTANCE);
+          const gy = Math.floor(p.pos.y / COLLISION_DISTANCE);
+          const gz = Math.floor(p.pos.z / COLLISION_DISTANCE);
           const hashIdx = (Math.abs(gx * 73856093 ^ gy * 19349663 ^ gz * 83492791)) % HASH_SIZE;
           collisionNext[i] = collisionHead[hashIdx];
           collisionHead[hashIdx] = i;
         }
 
-        // 2. Resolve self-collisions for particles within 0.10m that are not topological neighbors
+        // 2. Resolve self-collisions for particles that were separated in the rest shape.
         for (let i = 0; i < clothCount; i++) {
           const p1 = parts[i];
-          const gx = Math.floor(p1.pos.x / 0.10);
-          const gy = Math.floor(p1.pos.y / 0.10);
-          const gz = Math.floor(p1.pos.z / 0.10);
+          const gx = Math.floor(p1.pos.x / COLLISION_DISTANCE);
+          const gy = Math.floor(p1.pos.y / COLLISION_DISTANCE);
+          const gz = Math.floor(p1.pos.z / COLLISION_DISTANCE);
 
           for (let dx = -1; dx <= 1; dx++) {
             for (let dy = -1; dy <= 1; dy++) {
@@ -732,15 +819,16 @@ export function SpinnakerSail() {
                 let j = collisionHead[hashIdx];
                 while (j !== -1) {
                   if (j > i) {
-                    if (neighborMatrix[i * clothCount + j] === 0) {
+                    const restSeparationSq = p1.rest.distanceToSquared(parts[j].rest);
+                    if (neighborMatrix[i * clothCount + j] === 0 && restSeparationSq >= COLLISION_DISTANCE_SQ) {
                       const p2 = parts[j];
                       const dx_val = p2.pos.x - p1.pos.x;
                       const dy_val = p2.pos.y - p1.pos.y;
                       const dz_val = p2.pos.z - p1.pos.z;
                       const distSq = dx_val * dx_val + dy_val * dy_val + dz_val * dz_val;
-                      if (distSq < 0.01 && distSq > 1e-8) {
+                      if (distSq < COLLISION_DISTANCE_SQ && distSq > 1e-8) {
                         const dist = Math.sqrt(distSq);
-                        const overlap = 0.10 - dist;
+                        const overlap = COLLISION_DISTANCE - dist;
                         const m1 = p1.pinned ? 0 : 1;
                         const m2 = p2.pinned ? 0 : 1;
                         const sum = m1 + m2;
@@ -770,20 +858,17 @@ export function SpinnakerSail() {
         }
 
         // 3. Rig collision capsules (mast & forestay)
-        const headAnchor = parts[headI].rest;
-        const mastBase = new THREE.Vector3(headAnchor.x, 2.0, headAnchor.z);
-        const CAPSULES = [
-          { a: mastBase, b: headAnchor, r: 0.16 },    // mast
-          { a: headAnchor, b: TACK_ANCHOR, r: 0.06 },  // forestay
-        ];
         const abSeg = new THREE.Vector3();
         const ap = new THREE.Vector3();
         const cp = new THREE.Vector3();
         const dVec = new THREE.Vector3();
 
-        for (const p of parts) {
+        for (let particleIndex = 0; particleIndex < parts.length; particleIndex++) {
+          const p = parts[particleIndex];
           if (p.pinned) continue;
-          for (const c of CAPSULES) {
+          for (let capsuleIndex = 0; capsuleIndex < rigCapsules.length; capsuleIndex++) {
+            if (capsuleExemptions[capsuleIndex][particleIndex]) continue;
+            const c = rigCapsules[capsuleIndex];
             abSeg.subVectors(c.b, c.a);
             const l2 = abSeg.lengthSq();
             let t = 0;
@@ -858,21 +943,11 @@ export function SpinnakerSail() {
         });
       }
 
-      // Expose console debug verification hook updated every ~0.5s
+      // Form telemetry is published after the render-side normal pass below.
       timeSinceLastDebug.current += FRAME_TIME;
       if (timeSinceLastDebug.current >= 0.5) {
-        timeSinceLastDebug.current = 0;
-        (window as any).__sailDebug = {
-          awsMps: windVelocity.length(),
-          awaDeg: currentSimState.boat.twaDeg || 0,
-          stepHz: 1 / delta,
-          fBody: f_body,
-          tauBody: tau_body,
-          tackDist: parts[tackI].pos.distanceTo(TACK_ANCHOR),
-          clewDist: parts[clewI].pos.distanceTo(sim.clewAnchor),
-          windLocal: [windVelocity.x, windVelocity.y, windVelocity.z],
-          windWorldDeg: windWorldDeg,
-        };
+        timeSinceLastDebug.current %= 0.5;
+        publishFormTelemetry = true;
       }
 
       // Tangle metric: mean over cloth springs of max(0, L/rest - 1).
@@ -974,6 +1049,7 @@ export function SpinnakerSail() {
 
       // 2. Compute mean coherence over shared edges
       let dotSum = 0;
+      let foldEdgeCount = 0;
       for (let i = 0; i < sharedEdgeCount; i++) {
         const t1 = sharedEdgesArray[i * 2];
         const t2 = sharedEdgesArray[i * 2 + 1];
@@ -983,9 +1059,87 @@ export function SpinnakerSail() {
         const n2x = triNormals[t2 * 3];
         const n2y = triNormals[t2 * 3 + 1];
         const n2z = triNormals[t2 * 3 + 2];
-        dotSum += n1x * n2x + n1y * n2y + n1z * n2z;
+        const normalDot = n1x * n2x + n1y * n2y + n1z * n2z;
+        dotSum += normalDot;
+        if (normalDot < 0) foldEdgeCount++;
       }
       const meanCoherence = sharedEdgeCount > 0 ? dotSum / sharedEdgeCount : 1.0;
+
+      if (publishFormTelemetry) {
+        let strainSum = 0;
+        for (let i = 0; i < clothSpringCount; i++) {
+          const spring = springs[i];
+          const restLength = spring[2];
+          if (restLength > 1e-9) {
+            const length = parts[spring[0]].pos.distanceTo(parts[spring[1]].pos);
+            strainSum += Math.abs(length / restLength - 1);
+          }
+        }
+
+        let maxRestDeviation = 0;
+        for (let i = 0; i < clothCount; i++) {
+          maxRestDeviation = Math.max(maxRestDeviation, parts[i].pos.distanceTo(parts[i].rest));
+        }
+
+        const chord = new THREE.Vector3().subVectors(parts[tackI].pos, parts[headI].pos);
+        const chordLength = chord.length();
+        let luffSagM = 0;
+        if (chordLength > 1e-9) {
+          for (const node of luffNodes) {
+            const fromHead = new THREE.Vector3().subVectors(parts[node].pos, parts[headI].pos);
+            luffSagM = Math.max(
+              luffSagM,
+              new THREE.Vector3().crossVectors(fromHead, chord).length() / chordLength
+            );
+          }
+        }
+
+        const currentU = new THREE.Vector3().subVectors(parts[tackI].pos, parts[headI].pos);
+        const currentV = new THREE.Vector3().subVectors(parts[clewI].pos, parts[headI].pos);
+        const currentPlaneNormal = new THREE.Vector3().crossVectors(currentU, currentV);
+        let camberM = 0;
+        if (currentPlaneNormal.lengthSq() > 1e-12) {
+          currentPlaneNormal.normalize();
+          for (let i = 0; i < clothCount; i++) {
+            const fromHead = new THREE.Vector3().subVectors(parts[i].pos, parts[headI].pos);
+            camberM = Math.max(camberM, Math.abs(fromHead.dot(currentPlaneNormal)));
+          }
+        }
+
+        const form: SailFormTelemetry = {
+          meanStrain: clothSpringCount > 0 ? strainSum / clothSpringCount : 0,
+          normalCoherence: meanCoherence,
+          foldEdgeCount,
+          maxRestDeviation,
+          luffSagM,
+          camberM,
+          restCamberM: sim.restCamberM,
+        };
+        const debugForce = [
+          filteredForce.current.z,
+          -filteredForce.current.x,
+          -filteredForce.current.y,
+        ];
+        const debugTorque = [
+          filteredTorque.current.z,
+          -filteredTorque.current.x,
+          -filteredTorque.current.y,
+        ];
+        (window as any).__sailDebug = {
+          awsMps: windVelocity.length(),
+          awaDeg: currentSimState.boat.twaDeg || 0,
+          stepHz: 1 / delta,
+          fBody: debugForce,
+          tauBody: debugTorque,
+          tackDist: parts[tackI].pos.distanceTo(TACK_ANCHOR),
+          clewDist: parts[clewI].pos.distanceTo(sim.clewAnchor),
+          windLocal: [windVelocity.x, windVelocity.y, windVelocity.z],
+          windWorldDeg,
+          watchdogResetCount: watchdogResetCount.current,
+          form,
+        };
+        window.dispatchEvent(new CustomEvent<SailFormTelemetry>('sail-form', { detail: form }));
+      }
 
       // 3. Compute mean cloth particle velocity
       let velSum = 0;
@@ -1021,6 +1175,7 @@ export function SpinnakerSail() {
             `[Sail Watchdog] Tangled state confirmed (stretch ${(lastMeanStretch * 100).toFixed(0)}%, coherence ${meanCoherence.toFixed(2)}) — resetting to rest shape`
           );
           tangleTimer.current = 0;
+          watchdogResetCount.current++;
           for (const p of parts) {
             p.pos.copy(p.rest);
             p.prev.copy(p.rest);

@@ -224,6 +224,25 @@ pub fn cloth_wrench_to_cg(f_body: [f64; 3], tau_about_gltf: [f64; 3]) -> [f64; 6
     ]
 }
 
+/// Translate a 6-DOF wrench from the **contract** body frame (the documented
+/// API frame: +X fwd, +Y stbd, +Z down — what `/v1/sim/sail_wrench` accepts and
+/// what `gltf_vec_to_body` produces) into the **engine** frame the integrator
+/// actually uses.
+///
+/// MEASURED (frame-probe tests below): injecting +f_y displaces the boat to
+/// display-PORT and +τ_z yaws the bow to display-PORT — i.e. the engine's
+/// lateral axis is the y-mirror of the contract frame. Every legacy readout
+/// (`heading = −ψ`, `cog = atan2(−E, N)`, `leeway = atan2(−v, u)`) carries a
+/// compensating negation for the same reason; the externally injected cloth
+/// wrench was the only path without one, so a correct lee-helm sail torque
+/// arrived inverted and drove the bow INTO the wind.
+///
+/// A y-reflection flips polar vectors' y-component and axial vectors'
+/// x/z-components: `F → [fx, −fy, fz]`, `τ → [−τx, τy, −τz]`.
+pub fn contract_wrench_to_engine(w: [f64; 6]) -> [f64; 6] {
+    [w[0], -w[1], w[2], -w[3], w[4], -w[5]]
+}
+
 // Helper functions for vector math
 
 pub fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -651,10 +670,13 @@ pub fn cat_forces(
         let coeff = coefficient_sail_wrench(st, p, ctrl, wind_body, ground_lin, omega);
         let sail_tau = if let Some(ov) = sail_override {
             let b = ov.blend.clamp(0.0, 1.0);
-            // Cloth τ is about glTF origin; shift to CG before blending with
-            // the coefficient sail (which is already about CG via apply_at).
-            // Frontend owns frame map — do not negate f_body/tau_body here.
-            let ext = cloth_wrench_to_cg(ov.f_body, ov.tau_body);
+            // Cloth τ is about glTF origin; shift to CG in the CONTRACT frame,
+            // then mirror the whole 6-DOF wrench into the ENGINE frame (the
+            // integrator's lateral axis is the y-mirror of the documented
+            // contract — see contract_wrench_to_engine and the frame-probe
+            // tests). Frontend owns the glTF→contract map — do not negate
+            // f_body/tau_body before the shift.
+            let ext = contract_wrench_to_engine(cloth_wrench_to_cg(ov.f_body, ov.tau_body));
             if b >= 1.0 - 1e-9 {
                 let r = p.sail.r;
                 let v_ce = [
@@ -662,7 +684,8 @@ pub fn cat_forces(
                     ground_lin[1] + omega[2] * r[0] - omega[0] * r[2],
                 ];
                 let inflow = [wind_body[0] - v_ce[0], wind_body[1] - v_ce[1]];
-                cloth_wrench_runtime_invariants(ov.f_body, &coeff, inflow);
+                // Compare in ENGINE axes — coeff is engine-native.
+                cloth_wrench_runtime_invariants([ext[0], ext[1], ext[2]], &coeff, inflow);
             } else {
                 CLOTH_COEFF_DISAGREE_STREAK.store(0, Ordering::Relaxed);
             }
@@ -1202,6 +1225,83 @@ mod tests {
         assert!(
             u_at_120 > 0.5,
             "free sail should power up by 120s, got u={u_at_120}"
+        );
+    }
+
+    fn rest_state_heading_zero() -> CatState {
+        CatState {
+            eta: [0.0; 6],
+            nu: [0.0; 6],
+            rudder: 0.0,
+            stability: StabilityState::Upright,
+        }
+    }
+
+    fn dead_calm() -> Environment {
+        Environment {
+            wind_world: [0.0; 3],
+            current_world: [0.0; 3],
+        }
+    }
+
+    fn neutral_ctrl() -> CatControl {
+        CatControl {
+            rudder_cmd: 0.0,
+            sail_trim: sail_trim_to_sheet_rad(0.5),
+            thrust_port: 0.0,
+            thrust_stbd: 0.0,
+        }
+    }
+
+    /// Frame-contract probe (plan §2.1): body +Z is DOWN, so a positive yaw
+    /// moment τ_z injected through the cloth-wrench path MUST swing the bow to
+    /// STARBOARD — i.e. display heading `(−ψ) mod 360` increases from 0.
+    /// This crosses the external-wrench boundary exactly like the browser sail.
+    #[test]
+    fn cloth_positive_yaw_torque_turns_bow_to_starboard() {
+        let p = lagoon_450s();
+        let ov = SailWrenchOverride {
+            f_body: [0.0; 3],
+            tau_body: [0.0, 0.0, 20_000.0],
+            blend: 1.0,
+        };
+        let mut st = rest_state_heading_zero();
+        for _ in 0..200 {
+            st = cat_step(&st, &neutral_ctrl(), &dead_calm(), &p, 0.05, Some(ov));
+        }
+        let heading_deg = (-st.eta[5]).to_degrees();
+        assert!(
+            heading_deg > 2.0,
+            "+τ_z (bow-to-starboard by contract) yawed the bow the WRONG way: \
+             display heading went to {heading_deg}° after 10 s (expected clearly positive)"
+        );
+    }
+
+    /// Frame-contract probe (plan §2.1): +f_y is a STARBOARD force, so from
+    /// rest at heading 0 the boat must displace to starboard — display bearing
+    /// `atan2(−E, N)` (same readout chain main.rs uses for cog / local_pos)
+    /// lands in the right half-plane.
+    #[test]
+    fn cloth_positive_sway_force_drifts_boat_to_starboard() {
+        let p = lagoon_450s();
+        let ov = SailWrenchOverride {
+            f_body: [0.0, 3000.0, 0.0],
+            tau_body: [0.0; 3],
+            blend: 1.0,
+        };
+        let mut st = rest_state_heading_zero();
+        for _ in 0..200 {
+            st = cat_step(&st, &neutral_ctrl(), &dead_calm(), &p, 0.05, Some(ov));
+        }
+        let north = st.eta[0];
+        let east_display = -st.eta[1];
+        let dist = north.hypot(east_display);
+        assert!(dist > 0.5, "boat barely moved under 3 kN for 10 s: {dist} m");
+        let bearing_deg = east_display.atan2(north).to_degrees();
+        assert!(
+            bearing_deg > 10.0 && bearing_deg < 170.0,
+            "+f_y (starboard by contract) displaced the boat on bearing {bearing_deg}° \
+             from heading 0 — expected starboard half-plane (10°..170°); dist {dist} m"
         );
     }
 }
