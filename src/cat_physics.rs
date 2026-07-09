@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,10 +110,88 @@ pub struct SailWrenchOverride {
     pub blend: f64,
 }
 
-/// Map a vector from sail/glTF frame (+X starboard, +Y up, +Z bow) into backend
-/// body frame (+X forward, +Y starboard, +Z down). See plan §2.1.
+/// Map a vector from sail-local frame (+X **PORT**, +Y up, +Z bow — right-handed)
+/// into body frame (+X fwd, +Y stbd, +Z down). Proper rotation, det = +1.
+///
+/// Frontend is the **only** mapping site for live cloth wrenches; this helper is
+/// for tests, docs, and future use. Do **not** re-map or negate forces that
+/// already arrived as `f_body` / `tau_body` (see `plan/sail-fixes-round2.md`).
 pub fn gltf_vec_to_body(v_gltf: [f64; 3]) -> [f64; 3] {
-    [v_gltf[2], v_gltf[0], -v_gltf[1]]
+    [v_gltf[2], -v_gltf[0], -v_gltf[1]]
+}
+
+/// Consecutive physics steps with cloth↔coefficient force angle > 90° while
+/// blend = 1 (regression alarm for a mirrored frame map).
+static CLOTH_COEFF_DISAGREE_STREAK: AtomicU32 = AtomicU32::new(0);
+static CLOTH_INVARIANT_LOG_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+/// Min |F_xy| (N) before side-force / direction invariants apply.
+const CLOTH_DRAWING_FORCE_N: f64 = 50.0;
+/// Warn after this many consecutive blend=1 steps with force angle > 90°.
+const CLOTH_DISAGREE_WARN_STREAK: u32 = 20;
+/// Log cloth↔coeff angle every N blend=1 applications (debug).
+const CLOTH_ANGLE_LOG_EVERY: u32 = 40;
+
+/// Runtime checks when cloth fully replaces the coefficient sail (`blend ≈ 1`).
+/// Does not alter forces — observation only (plan/sail-fixes-round2 Fix 1).
+fn cloth_wrench_runtime_invariants(
+    f_body: [f64; 3],
+    coeff_tau: &[f64; 6],
+    inflow_xy: [f64; 2],
+) {
+    let f_xy = f_body[0].hypot(f_body[1]);
+    let drawing = f_xy > CLOTH_DRAWING_FORCE_N;
+
+    // Side force must be leeward: opposite the apparent-wind lateral TO component.
+    // LOG ONLY — never assert: the condition legitimately inverts during
+    // transients (gybes, backed sail, luff-through), and a panic inside the
+    // physics loop poisons the state RwLock, taking down every HTTP handler.
+    if drawing && inflow_xy[1].abs() > 1e-3 {
+        let side_prod = f_body[1] * inflow_xy[1];
+        if side_prod >= 0.0 {
+            tracing::debug!(
+                f_y = f_body[1],
+                inflow_y = inflow_xy[1],
+                "cloth wrench side force does not oppose AWA lateral (expected f_y * inflow_y < 0)"
+            );
+        }
+    }
+
+    // Angle between cloth force and coefficient sail force.
+    let c = [coeff_tau[0], coeff_tau[1], coeff_tau[2]];
+    let c_mag = c[0].hypot(c[1]).hypot(c[2]);
+    let f_mag = f_body[0].hypot(f_body[1]).hypot(f_body[2]);
+    if f_mag > CLOTH_DRAWING_FORCE_N && c_mag > CLOTH_DRAWING_FORCE_N {
+        let dot = f_body[0] * c[0] + f_body[1] * c[1] + f_body[2] * c[2];
+        let cos = (dot / (f_mag * c_mag)).clamp(-1.0, 1.0);
+        let angle_deg = cos.acos().to_degrees();
+
+        let n = CLOTH_INVARIANT_LOG_COUNTER.fetch_add(1, Ordering::Relaxed);
+        if n % CLOTH_ANGLE_LOG_EVERY == 0 {
+            tracing::debug!(
+                angle_deg,
+                f_body = ?f_body,
+                coeff_f = ?c,
+                "cloth vs coefficient sail force angle (blend=1)"
+            );
+        }
+
+        if angle_deg > 90.0 {
+            let streak = CLOTH_COEFF_DISAGREE_STREAK.fetch_add(1, Ordering::Relaxed) + 1;
+            if streak >= CLOTH_DISAGREE_WARN_STREAK && streak % CLOTH_DISAGREE_WARN_STREAK == 0 {
+                tracing::warn!(
+                    angle_deg,
+                    streak,
+                    f_body = ?f_body,
+                    coeff_f = ?c,
+                    "cloth wrench force disagrees >90° with coefficient sail for {streak} steps \
+                     (mirrored frame map regression? plan/sail-fixes-round2 Fix 1)"
+                );
+            }
+        } else {
+            CLOTH_COEFF_DISAGREE_STREAK.store(0, Ordering::Relaxed);
+        }
+    }
 }
 
 /// Position of the hull glTF model origin `(0,0,0)` in body coordinates, relative
@@ -573,13 +653,26 @@ pub fn cat_forces(
             let b = ov.blend.clamp(0.0, 1.0);
             // Cloth τ is about glTF origin; shift to CG before blending with
             // the coefficient sail (which is already about CG via apply_at).
+            // Frontend owns frame map — do not negate f_body/tau_body here.
             let ext = cloth_wrench_to_cg(ov.f_body, ov.tau_body);
+            if b >= 1.0 - 1e-9 {
+                let r = p.sail.r;
+                let v_ce = [
+                    ground_lin[0] + omega[1] * r[2] - omega[2] * r[1],
+                    ground_lin[1] + omega[2] * r[0] - omega[0] * r[2],
+                ];
+                let inflow = [wind_body[0] - v_ce[0], wind_body[1] - v_ce[1]];
+                cloth_wrench_runtime_invariants(ov.f_body, &coeff, inflow);
+            } else {
+                CLOTH_COEFF_DISAGREE_STREAK.store(0, Ordering::Relaxed);
+            }
             let mut blended = [0.0; 6];
             for i in 0..6 {
                 blended[i] = b * ext[i] + (1.0 - b) * coeff[i];
             }
             blended
         } else {
+            CLOTH_COEFF_DISAGREE_STREAK.store(0, Ordering::Relaxed);
             coeff
         };
         for i in 0..6 {
@@ -926,18 +1019,22 @@ mod tests {
 
     #[test]
     fn frame_map_pure_z_gltf_force_is_positive_surge() {
-        // plan §2.1: v_body = [v_gltf.z, v_gltf.x, -v_gltf.y]
-        let f_gltf = [0.0, 0.0, 1.0]; // pure +z_gltf (toward bow in sail frame)
-        let f_body = gltf_vec_to_body(f_gltf);
-        // Surge is body +X = tau[0]
+        // plan §2.1 / sail-fixes-round2: v_body = [z, -x, -y], det = +1
+        assert_eq!(gltf_vec_to_body([0.0, 0.0, 1.0]), [1.0, 0.0, 0.0]); // bow → surge
+        assert_eq!(gltf_vec_to_body([1.0, 0.0, 0.0]), [0.0, -1.0, 0.0]); // PORT → −stbd
+        assert_eq!(gltf_vec_to_body([0.0, 1.0, 0.0]), [0.0, 0.0, -1.0]); // up → −down
+
+        // Mapping matrix columns = images of basis; det must be +1 (proper rotation).
+        let c0 = gltf_vec_to_body([1.0, 0.0, 0.0]);
+        let c1 = gltf_vec_to_body([0.0, 1.0, 0.0]);
+        let c2 = gltf_vec_to_body([0.0, 0.0, 1.0]);
+        let det = c0[0] * (c1[1] * c2[2] - c1[2] * c2[1])
+            - c0[1] * (c1[0] * c2[2] - c1[2] * c2[0])
+            + c0[2] * (c1[0] * c2[1] - c1[1] * c2[0]);
         assert!(
-            f_body[0] > 0.0,
-            "pure +z_gltf must map to positive surge, got {:?}",
-            f_body
+            (det - 1.0).abs() < 1e-15,
+            "gltf→body map det must be +1 (got {det}); det=-1 is a reflection"
         );
-        assert!((f_body[0] - 1.0).abs() < 1e-15);
-        assert!((f_body[1] - 0.0).abs() < 1e-15);
-        assert!((f_body[2] - 0.0).abs() < 1e-15);
     }
 
     #[test]

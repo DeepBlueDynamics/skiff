@@ -191,6 +191,9 @@ const P = {
   FRAME_HZ: 60,        // fixed sim frame rate (accumulator-driven)
   SUBSTEPS: 8,         // h = 1/480 s
   ITER: 6,             // Gauss–Seidel projection iterations per substep
+  K_BEND: 0.15,        // cross-spring bending stiffness (kills grid-scale folds)
+  K_COMPRESS: 0.35,    // cloth compression response (membranes buckle, don't push)
+  K_TAPE2: 0.35,       // edge straightness ('leech line') stiffness
   DAMP: 0.999,         // light structural damping; aero does the real damping
   VMAX: 60,            // m/s — inert explosion guard, far above dynamics
   N: 18,               // triangular grid rows -> (N+1)(N+2)/2 cloth nodes
@@ -229,15 +232,50 @@ function buildSail(){
   }
 
   // --- triangles + deduped edge constraints from topology
-  const tris=[]; const cons=[]; const seen=new Set();
-  const edge=(a,b)=>{ const k=a<b? a*100000+b : b*100000+a;
-    if(seen.has(k))return; seen.add(k);
+  // Boundary edges (luff/leech/foot) are 'tape': held at <= flat rest
+  // length like a real leech line / tabling, so free edges stay
+  // tensioned while the body carries the fullness.
+  const tris=[]; const cons=[]; const seen=new Set(); const oppo=new Map();
+  const ek=(a,b)=> a<b? a*100000+b : b*100000+a;
+  const tape=new Set();
+  for(let i=0;i<N;i++){ tape.add(ek(idx(i,0),idx(i+1,0)));        // luff
+                        tape.add(ek(idx(i,i),idx(i+1,i+1))); }    // leech
+  for(let j=0;j<N;j++)  tape.add(ek(idx(N,j),idx(N,j+1)));        // foot
+  const adj=Array.from({length:cloth},()=>[]);
+  const edge=(a,b,opp)=>{ const k=ek(a,b);
+    if(!oppo.has(k)) oppo.set(k,[]);
+    oppo.get(k).push(opp);
+    if(seen.has(k)) return; seen.add(k);
+    adj[a].push(b); adj[b].push(a);
     const dx=pos[3*a]-pos[3*b], dy=pos[3*a+1]-pos[3*b+1], dz=pos[3*a+2]-pos[3*b+2];
-    cons.push({a,b,rest:vlen3(dx,dy,dz),base:vlen3(dx,dy,dz),uni:false,cloth:true}); };
+    const L=vlen3(dx,dy,dz);
+    cons.push({a,b,rest:L,base:L,uni:false,kind:tape.has(k)?'tape':'cloth'}); };
   for(let i=0;i<N;i++) for(let j=0;j<=i;j++){
     const a=idx(i,j), b=idx(i+1,j), c=idx(i+1,j+1);
-    tris.push(a,b,c); edge(a,b); edge(b,c); edge(c,a);
-    if(j<i){ const d=idx(i,j+1); tris.push(a,c,d); edge(c,d); edge(a,d); }
+    tris.push(a,b,c); edge(a,b,c); edge(b,c,a); edge(c,a,b);
+    if(j<i){ const d=idx(i,j+1); tris.push(a,c,d); edge(a,c,d); edge(c,d,a); edge(d,a,c); }
+  }
+  // --- bending: cross-springs between the opposite vertices of every
+  // shared edge. A grid-scale fold shortens these drastically; smooth
+  // large-radius camber barely does — so soft stiffness suppresses
+  // sawtooth buckling without fighting the sail's shape.
+  for(const ops of oppo.values()){
+    if(ops.length!==2) continue;
+    const [p,q]=ops;
+    const dx=pos[3*p]-pos[3*q], dy=pos[3*p+1]-pos[3*q+1], dz=pos[3*p+2]-pos[3*q+2];
+    const L=vlen3(dx,dy,dz);
+    cons.push({a:p,b:q,rest:L,base:L,uni:false,kind:'bend'});
+  }
+  // --- edge straightness ('leech line' / batten): second-neighbour
+  // springs along each tape reach the boundary fold mode that
+  // cross-spring bending only touches weakly.
+  const tapesN=[[],[],[]];
+  for(let i=0;i<=N;i++){ tapesN[0].push(idx(i,0)); tapesN[1].push(idx(i,i)); }
+  for(let j=0;j<=N;j++)  tapesN[2].push(idx(N,j));
+  for(const line of tapesN) for(let k=1;k<line.length-1;k++){
+    const p=line[k-1], q=line[k+1];
+    const dx=pos[3*p]-pos[3*q], dy=pos[3*p+1]-pos[3*q+1], dz=pos[3*p+2]-pos[3*q+2];
+    cons.push({a:p,b:q,rest:vlen3(dx,dy,dz),base:vlen3(dx,dy,dz),uni:false,kind:'tape2'});
   }
   const clothCons = cons.length;
 
@@ -265,7 +303,7 @@ function buildSail(){
       const ni = pos.length/3 - 1;
       const dx=pos[3*prevIdx]-pos[3*ni], dy=pos[3*prevIdx+1]-pos[3*ni+1], dz=pos[3*prevIdx+2]-pos[3*ni+2];
       const L=vlen3(dx,dy,dz);
-      cons.push({a:prevIdx,b:ni,rest:L*slack,base:L,uni:true,cloth:false});
+      cons.push({a:prevIdx,b:ni,rest:L*slack,base:L,uni:true,kind:'rope'});
       consIdx.push(cons.length-1);
       prevIdx=ni;
     }
@@ -281,7 +319,7 @@ function buildSail(){
 
   const n = pos.length/3;
   const S = {
-    n, cloth, clothCons, tris, cons, ropes, bucket, area,
+    n, cloth, clothCons, tris, cons, ropes, bucket, area, adj,
     pos:  Float64Array.from(pos),
     prev: Float64Array.from(pos),
     rest: Float64Array.from(pos),
@@ -323,7 +361,11 @@ function setLuffPinned(S,on){
 
 function setSheet(S,f){ for(const ci of S.ropes.sheet.consIdx)   S.cons[ci].rest=S.ropes.sheet.baseSeg*f; }
 function setTack(S,f){ for(const ci of S.ropes.tackline.consIdx) S.cons[ci].rest=S.ropes.tackline.baseSeg*f; }
-function setFullness(S,f){ for(let c=0;c<S.clothCons;c++) S.cons[c].rest=S.cons[c].base*f; }
+function setFullness(S,f){
+  for(let c=0;c<S.clothCons;c++){ const C=S.cons[c];
+    C.rest = (C.kind==='tape'||C.kind==='tape2') ? C.base*0.998 : C.base*f;  // tapes snug
+  }
+}
 
 function resetSail(S){
   S.pos.set(S.rest); S.prev.set(S.rest); S.force.fill(0); S.aeroLoad.fill(0);
@@ -392,7 +434,13 @@ function stepFrame(S, wind){
         const L=vlen3(dx,dy,dz); if(L<1e-7) continue;
         if(C.uni && L<=C.rest) continue;         // ropes only pull
         const wa=invM[C.a], wb=invM[C.b], ws=wa+wb; if(ws===0) continue;
-        const diff=(L-C.rest)/L;
+        // soft modes: bending is weak; compressed cloth goes slack
+        // smoothly instead of sawtoothing (membranes don't push)
+        let kst=1;
+        if(C.kind==='bend') kst=P.K_BEND;
+        else if(C.kind==='tape2') kst=P.K_TAPE2;
+        else if(C.kind!=='rope' && L<C.rest) kst=P.K_COMPRESS;
+        const diff=(L-C.rest)/L*kst;
         const cx=dx*diff, cy=dy*diff, cz=dz*diff; // full correction vector (a->b sense)
         if(wa>0){ const s=wa/ws; pos[a3]+=cx*s; pos[a3+1]+=cy*s; pos[a3+2]+=cz*s; }
         if(wb>0){ const s=wb/ws; pos[b3]-=cx*s; pos[b3+1]-=cy*s; pos[b3+2]-=cz*s; }
@@ -496,6 +544,7 @@ for(const [p,c] of [[RIG.halyard,0xff8fa3],[RIG.bowsprit,0x7ce0a0],[RIG.sheetLea
 
 /* ---- sail mesh + ropes ---- */
 const S=buildSail();
+const shadeBuf=new Float64Array(S.cloth);
 const sailGeo=new THREE.BufferGeometry();
 sailGeo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(S.cloth*3),3));
 sailGeo.setAttribute('color',new THREE.BufferAttribute(new Float32Array(S.cloth*3).fill(1),3));
@@ -672,8 +721,13 @@ function frame(now){
   sailGeo.computeVertexNormals();
   const ca=sailGeo.attributes.color.array;
   if(ctrl.shade){
-    let m=1e-4; for(let i=0;i<S.cloth;i++) m=Math.max(m,S.aeroLoad[i]);
-    for(let i=0;i<S.cloth;i++){ const t=Math.min(1,S.aeroLoad[i]/m);
+    // neighbour-average the load field: boundary vertices have fewer
+    // incident triangles, so raw values stripe along the edges
+    for(let i=0;i<S.cloth;i++){ let s=S.aeroLoad[i]; const nb=S.adj[i];
+      for(let k=0;k<nb.length;k++) s+=S.aeroLoad[nb[k]];
+      shadeBuf[i]=s/(nb.length+1); }
+    let m=1e-4; for(let i=0;i<S.cloth;i++) m=Math.max(m,shadeBuf[i]);
+    for(let i=0;i<S.cloth;i++){ const t=Math.min(1,shadeBuf[i]/m);
       // navy -> cyan -> amber -> red
       ca[3*i]  = t<0.5? 0.15+t*1.2 : 0.75+ (t-0.5)*0.5;
       ca[3*i+1]= t<0.6? 0.35+t*0.9 : 0.89-(t-0.6)*1.6;

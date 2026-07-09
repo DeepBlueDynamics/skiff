@@ -37,16 +37,16 @@ Violating this section is how force signs flip and boats sail backwards. All new
 | Frame | Axes | Where |
 |---|---|---|
 | **Body (backend)** | +X forward, +Y starboard, +Z down (NED-ish). Euler φ heel, θ pitch, ψ yaw | `cat_physics.rs` `eta`/`nu` |
-| **Sail/glTF (frontend)** | +X starboard, +Y up, +Z toward bow (tack ring at z≈+7.32) | raw GLB coords; `SpinnakerSail` operates here |
+| **Sail/glTF (frontend)** | **+X PORT**, +Y up, +Z toward bow (tack ring at z≈+7.32). Right-handed: x = up×bow = port. (CORRECTED 2026-07-09 — this table previously said "+X starboard", which seeded a mirrored wrench map; see `plan/sail-fixes-round2.md`) | raw GLB coords; `SpinnakerSail` operates here |
 | **Scene (frontend)** | three.js world; boat group applies `rotation=[pitch, -heading, heel]`; the GLB and the sail sim both sit inside an extra `rotation=[0, π, 0]` wrapper | `BoatModel.tsx` |
 
-**Frame map (sail/glTF → body), for forces and torques alike:**
+**Frame map (sail/glTF → body), for forces and torques alike — must be a proper rotation (det = +1):**
 
 ```
-v_body = [ v_gltf.z,  v_gltf.x,  -v_gltf.y ]
+v_body = [ v_gltf.z,  -v_gltf.x,  -v_gltf.y ]      // stbd = −port
 ```
 
-Required unit test: a pure `+z_gltf` force maps to positive surge (`tau[0] > 0`).
+Required unit tests: bow → +surge; **port → −starboard**; up → −down; and the mapping matrix determinant is **+1** (a det = −1 map is a reflection and mirrors every side force, heel, and yaw moment — this exact bug shipped once).
 
 Backend quirks (self-consistent, keep, do not "fix" silently): `heading_true_deg = (−ψ)·180/π mod 360`; `cog = atan2(−E, N)`. These are documented here so nobody adds a fourth convention.
 

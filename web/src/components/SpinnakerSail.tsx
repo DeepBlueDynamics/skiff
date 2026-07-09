@@ -18,9 +18,9 @@ const WELD_EPS = 1e-3;
 // Rig attachment points (glTF frame, boat-local — verified against lagoon-450s.glb)
 const TACK_ANCHOR = new THREE.Vector3(-0.041, 2.028, 7.321); // Object.541 tack ring on the bowsprit
 // Object.122 traveler track ends (mirrored port/starboard), near the helm.
-// In this frame +x renders on the visual PORT side of the boat.
-const SHEET_LEAD_PORT = new THREE.Vector3(2.459, 2.108, -4.033);
-const SHEET_LEAD_STARBOARD = new THREE.Vector3(-2.459, 2.108, -4.033);
+// In this frame +x is PORT, and -x is STARBOARD.
+const SHEET_LEAD_PORT = new THREE.Vector3(2.459, 2.108, -4.033); // +x = PORT sheet lead
+const SHEET_LEAD_STARBOARD = new THREE.Vector3(-2.459, 2.108, -4.033); // -x = STARBOARD sheet lead
 
 class Particle {
   pos: THREE.Vector3;
@@ -287,6 +287,12 @@ export function SpinnakerSail() {
     const material = (Array.isArray(src.material) ? src.material[0] : src.material).clone();
     material.side = THREE.DoubleSide;
     material.vertexColors = true;
+    // glTF BLEND materials import with depthWrite=false — the transparent water
+    // then paints over the sail whenever draw order flips at distance. Sailcloth
+    // is effectively opaque: force opaque + depth write so occlusion is per-pixel.
+    material.transparent = false;
+    material.opacity = 1.0;
+    material.depthWrite = true;
 
     // Precompute shared edges list for crumple normal coherence check
     const edgeTriangles = new Map<string, number[]>();
@@ -368,6 +374,7 @@ export function SpinnakerSail() {
   const timeSinceLastStoreUpdate = useRef(0);
   const seqRef = useRef(0);
   const hasLoggedCrumpled = useRef(false);
+  const tangleTimer = useRef(0);
 
   const tackLineMesh = useMemo(() => new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0x7ce0a0 })), []);
   const clewLineMesh = useMemo(() => new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffd166 })), []);
@@ -517,6 +524,7 @@ export function SpinnakerSail() {
     const FRAME_TIME = 1 / 60;
     
     let stepped = false;
+    let lastMeanStretch = 0;
 
     const tmp = new THREE.Vector3();
     const tmp2 = new THREE.Vector3();
@@ -535,18 +543,11 @@ export function SpinnakerSail() {
       let totalForceWeight = 0;
 
       for (let sub = 0; sub < SUBSTEPS; sub++) {
-        // Initialize forces (gravity + windage + flutter noise)
-        const noiseMag = 28.0 * (1.0 - luffFactor) * windVelocity.length();
+        // Initialize forces (gravity + windage)
         for (let i = 0; i < parts.length; i++) {
           const p = parts[i];
           const m = i < clothCount ? MASS : 0.05; // rope nodes are 0.05kg in the reference
           p.force.copy(gravityLocal).multiplyScalar(m);
-
-          if (i < clothCount && luffFactor < 0.99) {
-            p.force.x += (Math.random() - 0.5) * noiseMag * m;
-            p.force.y += (Math.random() - 0.5) * noiseMag * m;
-            p.force.z += (Math.random() - 0.5) * noiseMag * m;
-          }
         }
 
         const substepForce = new THREE.Vector3();
@@ -588,7 +589,7 @@ export function SpinnakerSail() {
             const rz = windVelocity.z - vz;
             
             const vn = rx * nrm.x + ry * nrm.y + rz * nrm.z;
-            const q = 0.5 * 1.225 * Cp * vn * Math.abs(vn) * luffFactor;
+            const q = 0.5 * 1.225 * Cp * vn * Math.abs(vn);
             
             // Total aerodynamic force vector on the triangle (not divided by 3)
             const fTri = nrm.clone().multiplyScalar(q * area);
@@ -740,7 +741,42 @@ export function SpinnakerSail() {
           }
         }
 
-        // 3. Ensure pinned nodes stay perfectly target-aligned
+        // 3. Rig collision capsules (mast & forestay)
+        const headAnchor = parts[headI].rest;
+        const mastBase = new THREE.Vector3(headAnchor.x, 2.0, headAnchor.z);
+        const CAPSULES = [
+          { a: mastBase, b: headAnchor, r: 0.16 },    // mast
+          { a: headAnchor, b: TACK_ANCHOR, r: 0.06 },  // forestay
+        ];
+        const abSeg = new THREE.Vector3();
+        const ap = new THREE.Vector3();
+        const cp = new THREE.Vector3();
+        const dVec = new THREE.Vector3();
+
+        for (const p of parts) {
+          if (p.pinned) continue;
+          for (const c of CAPSULES) {
+            abSeg.subVectors(c.b, c.a);
+            const l2 = abSeg.lengthSq();
+            let t = 0;
+            if (l2 > 1e-6) {
+              ap.subVectors(p.pos, c.a);
+              t = Math.max(0, Math.min(1, ap.dot(abSeg) / l2));
+            }
+            cp.copy(c.a).addScaledVector(abSeg, t);
+            dVec.subVectors(p.pos, cp);
+            const dist = dVec.length();
+            if (dist < c.r) {
+              if (dist > 1e-4) {
+                p.pos.copy(cp).addScaledVector(dVec, c.r / dist);
+              } else {
+                p.pos.copy(cp).x += c.r;
+              }
+            }
+          }
+        }
+
+        // 4. Ensure pinned nodes stay perfectly target-aligned
         for (const p of parts) {
           if (p.pinned) p.pos.copy(p.target);
         }
@@ -759,16 +795,17 @@ export function SpinnakerSail() {
       filteredTorque.current.lerp(avgStepTorque, emaAlpha);
       filteredCentroid.current.lerp(avgCentroid, emaAlpha);
 
-      // Map to body coordinate frame: v_body = [v.z, v.x, -v.y]
+      // Sail-local frame is (+X port, +Y up, +Z bow) — right-handed.
+      // Body frame is (+X fwd, +Y stbd, +Z down). Proper rotation, det = +1:
       const f_body = [
         filteredForce.current.z,
-        filteredForce.current.x,
+        -filteredForce.current.x,
         -filteredForce.current.y
       ] as [number, number, number];
       
       const tau_body = [
         filteredTorque.current.z,
-        filteredTorque.current.x,
+        -filteredTorque.current.x,
         -filteredTorque.current.y
       ] as [number, number, number];
 
@@ -809,6 +846,22 @@ export function SpinnakerSail() {
           windWorldDeg: windWorldDeg,
         };
       }
+
+      // Tangle metric: mean over cloth springs of max(0, L/rest - 1).
+      // NOTE: a hard-drawing sail carries steady residual stretch (PBD with
+      // finite iterations never fully converges under kN loads), so stretch
+      // alone must NOT trigger the reset — the decision is reconciled with
+      // normal coherence in the per-frame crumple check below.
+      let springStretchSum = 0;
+      for (let i = 0; i < clothSpringCount; i++) {
+        const s = springs[i];
+        const p1 = parts[s[0]];
+        const p2 = parts[s[1]];
+        const rest = s[2];
+        const d = p1.pos.distanceTo(p2.pos);
+        springStretchSum += Math.max(0, d / rest - 1);
+      }
+      lastMeanStretch = clothSpringCount > 0 ? springStretchSum / clothSpringCount : 0;
 
       accumulator.current -= FRAME_TIME;
       stepped = true;
@@ -927,6 +980,30 @@ export function SpinnakerSail() {
         }
       } else {
         hasLoggedCrumpled.current = false;
+      }
+
+      // Reconciled tangle watchdog: a TANGLE is high spring stretch AND
+      // incoherent normals together. A drawing sail is stretched but its
+      // adjacent triangle normals stay aligned (coherence near 1), so it
+      // must never trip this. Sustained 2s of both signals -> reset.
+      if (lastMeanStretch > 0.25 && meanCoherence < 0.5) {
+        tangleTimer.current += Math.min(delta, 0.1);
+        if (tangleTimer.current >= 2.0) {
+          console.warn(
+            `[Sail Watchdog] Tangled state confirmed (stretch ${(lastMeanStretch * 100).toFixed(0)}%, coherence ${meanCoherence.toFixed(2)}) — resetting to rest shape`
+          );
+          tangleTimer.current = 0;
+          for (const p of parts) {
+            p.pos.copy(p.rest);
+            p.prev.copy(p.rest);
+            p.force.set(0, 0, 0);
+          }
+          filteredForce.current.set(0, 0, 0);
+          filteredTorque.current.set(0, 0, 0);
+          filteredCentroid.current.set(0, 0, 0);
+        }
+      } else {
+        tangleTimer.current = 0;
       }
 
       // Update tack line mesh

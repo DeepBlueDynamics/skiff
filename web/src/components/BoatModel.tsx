@@ -46,6 +46,13 @@ export function BoatModel() {
           const materials = Array.isArray(child.material) ? child.material : [child.material];
           materials.forEach((mat) => {
             mat.side = THREE.DoubleSide;
+            // glTF BLEND materials import with depthWrite=false; the transparent
+            // water then draws over them when sort order flips at distance. Keep
+            // any blend look but always write depth so above-water parts of the
+            // boat can never be painted over by the water plane.
+            if (mat.transparent) {
+              mat.depthWrite = true;
+            }
           });
         }
 
