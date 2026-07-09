@@ -8,6 +8,54 @@ import { SpinnakerSail } from './SpinnakerSail';
 
 const AXIS_Y = new THREE.Vector3(0, 1, 0);
 
+// PBR skin sets exported from Substance (models/Lagoon_450S, downscaled to 2K
+// in web/public/skins), keyed by the GLB material names they dress. The GLB
+// sail materials are skipped — sails are hidden and the cloth jib paints its
+// own force-colored material.
+const SKIN_BY_MATERIAL: Record<string, { prefix: string; normalYFlip: boolean; hasOpacity?: boolean }> = {
+  'LAGOON  450-S Body': { prefix: 'body', normalYFlip: true },
+  'LAGOON  450-S Body 2': { prefix: 'body2', normalYFlip: true, hasOpacity: true },
+  'LAGOON  450-S Body 3': { prefix: 'body3', normalYFlip: true },
+  'Brig Dingo D285': { prefix: 'dingo', normalYFlip: false },
+};
+
+const skinTextureCache = new Map<string, THREE.Texture>();
+function skinTexture(file: string, srgb: boolean): THREE.Texture {
+  let tex = skinTextureCache.get(file);
+  if (!tex) {
+    tex = new THREE.TextureLoader().load(`/skins/${file}`);
+    tex.flipY = false; // glTF UV convention
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.anisotropy = 4;
+    if (srgb) tex.colorSpace = THREE.SRGBColorSpace;
+    skinTextureCache.set(file, tex);
+  }
+  return tex;
+}
+
+function applySkin(mat: THREE.Material) {
+  const skin = SKIN_BY_MATERIAL[mat.name];
+  if (!skin || !(mat instanceof THREE.MeshStandardMaterial)) return;
+  const p = skin.prefix;
+  mat.map = skinTexture(`${p}_basecolor.jpg`, true);
+  mat.roughnessMap = skinTexture(`${p}_roughness.jpg`, false);
+  mat.metalnessMap = skinTexture(`${p}_metallic.jpg`, false);
+  mat.aoMap = skinTexture(`${p}_ao.jpg`, false);
+  mat.normalMap = skinTexture(`${p}_normal_${skin.normalYFlip ? 'dx' : 'gl'}.png`, false);
+  // DirectX-convention normal maps have Y inverted vs what three expects.
+  mat.normalScale.set(1, skin.normalYFlip ? -1 : 1);
+  if (skin.hasOpacity) {
+    mat.alphaMap = skinTexture(`${p}_opacity.png`, false);
+    mat.transparent = true;
+  }
+  // Authored scalar factors MULTIPLY the maps; an authored 0 would zero them out.
+  mat.metalness = 1.0;
+  mat.roughness = 1.0;
+  // Base color factor tints the map the same way; reset to white.
+  mat.color.set(0xffffff);
+  mat.needsUpdate = true;
+}
+
 export function BoatModel() {
   const boat = useSimulator((state) => state.boat);
   const settings = useSimulator((state) => state.settings);
@@ -45,6 +93,7 @@ export function BoatModel() {
         if (child.material) {
           const materials = Array.isArray(child.material) ? child.material : [child.material];
           materials.forEach((mat) => {
+            applySkin(mat);
             mat.side = THREE.DoubleSide;
             // glTF BLEND materials import with depthWrite=false; the transparent
             // water then draws over them when sort order flips at distance. Keep
