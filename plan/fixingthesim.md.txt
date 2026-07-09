@@ -1,0 +1,71 @@
+Frontend boat model is a kinematic target-speed lerp — noted. Now the backend: who actually steps the boat, and does anything consume forces?Two more checks — how the sail mounts under the heeled boat group, and what monitor_sim.py expects:Review's done — full read of the backend (cat_physics, main, sim), the cloth (SpinnakerSail), and the seam between them (store, SimulatorScene, BoatModel). The architecture is cleaner than your description undersold: backend is a proper Fossen-style 6-DOF model (added mass, Coriolis, quadratic damping, restoring with a catamaran GZ curve, RK4 at 20 Hz) with hydro foils that share one decent `foil_force_2d` (AR-dependent lift slope, induced drag, post-stall). Frontend is a pure viewer that POSTs control and polls `/v1/sim/state` each frame. The cloth is a Jakobsen-style Verlet+projection sim using the Blender sail as rest shape, with unilateral rope chains for tack and clew — the rope-only-pulls constraint and the mesh-as-rest-shape approach are both right. Here's what needs attention, ordered by how much it will hurt.
+
+### Three things that are wrong today
+
+**1. The rotation matrix has a typo that's masked by zero heel.** `rotation_body_to_world`, row 2, column 3:
+
+```rust
+spsi * sth * cphi - cphi * sphi,   // current
+spsi * sth * cphi - cpsi * sphi,   // correct ZYX element (2,3)
+```
+
+The error term is `(cpsi − cphi)·sphi`, which vanishes when heel φ ≈ 0 — which it always is right now, because nothing generates heeling moment. The moment sails exist, every body↔world transform (wind, current, ground velocity, and its transpose in `rotate_world_to_body`) corrupts as a function of heel×yaw, and you'll chase it as a "sailing feels wrong on one tack" bug. Fix it first, and add a unit test that checks R·Rᵀ = I and a round-trip vector at φ=20°, θ=5°, ψ=137°.
+
+**2. Real-weather mode blows the wind backwards.** In `fetchRealTimeData`, Open-Meteo's `wind_direction_10m` is meteorological convention — the direction the wind comes *from* — and you assign it straight into `windToDeg`, which `from_speed_to_deg` treats as the direction the vector points *toward*. Everything in "real" dataSource mode is 180° reversed. Related smell: the backend comment says "14 knots from 150 deg" on a `from_speed_to_deg(7.2, 150.0)` call that builds a *to*-vector. Pick one convention, put it in the field names (`wind_from_deg`), and convert at ingestion.
+
+**3. `tws_mps`/`twa_deg` actually carry apparent wind.** The physics loop computes apparent wind properly — including the ω×r rotational terms at the masthead, which is genuinely nice — and then stores it into fields named true wind. The cloth is accidentally correct (it's consuming AWA/AWS, which is what a sail should see), but every consumer that trusts the name is wrong: the HUD, and worse, the SignalK publisher, which sends a boat-relative apparent *angle* out as `environment.wind.directionTrue` — a path SignalK defines as a true-north *from*-direction. Any real instrument display or logger downstream gets garbage. Rename to `aws_mps`/`awa_deg`, publish on `environment.wind.speedApparent`/`angleApparent`, and emit actual TWS/TWA separately (you already compute `twa_true_deg` for course classification).
+
+### The cloth as a force source: two blockers, one path
+
+**The force clamp destroys the loads you want to extract.** `maxForce = MASS * 40` caps each particle at 4 g. Per particle that's `(25/N)·40 = 1000/N` newtons, while the wind load per particle is `≈ 1.1·v²·A_proj/N` — the N cancels, so the clamp engages whenever `1.1·v²·A_proj > 1000`. For a spinnaker-scale projected area that's roughly 2.5–3 m/s apparent — about 5 knots. Above that, the sail feels a direction-only wind of fixed magnitude: shape stops responding to wind strength, and any force you sum out of it is clamped garbage with the wrong scaling law. `MAX_VEL = 0.4` per substep is 192 m/s and effectively inert, fine as an explosion guard; the force clamp is the one that has to go. If removing it destabilizes things, the fix is more iterations/substeps (or graph-colored constraints), never load clamping.
+
+**The timestep assumes a 60 Hz display.** `useFrame` runs at monitor refresh; `H = (1/60)/8` is hardcoded. On a 144 Hz display the sim runs 2.4× fast; on a laptop throttled to 30 fps, half speed. Use the `delta` argument with a fixed-step accumulator (clamped to avoid spiral-of-death) so 8 substeps of 1/480 s happen per *simulated* 1/60 s.
+
+**You don't need constraint forces for the boat coupling — sum the wrench.** This code is PBD, not XPBD: there are no Lagrange multipliers to read, and reaction forces at pinned particles are silently absorbed (pins are snapped to target and given zero inverse mass). But for the rigid-body input you don't need per-attachment reactions at all. You already compute the per-triangle aerodynamic force; accumulate the resultant and its moment in the same loop:
+
+```ts
+fTri.copy(nrm).multiplyScalar(nrm.dot(windForce) * area);   // total, not /3
+fAero.add(fTri);
+centroid.copy(pa).add(pb).add(pc).multiplyScalar(1 / 3);
+tauAero.add(tmp2.subVectors(centroid, R_REF).cross(fTri));
+```
+
+At quasi-steady state the attachment reactions sum to exactly −(aero + gravity) — 25 kg of sail against kN of load means the inertial transient is noise, and the low-pass filter you need anyway (average across substeps, then a few-Hz filter before the boat sees it) makes it exact in the mean. This is the smooth, solver-independent answer. Per-*line* tensions (halyard load readout, sheet load alarms) are the thing that genuinely needs XPBD-ification later — spring elongation in a projection solver is iteration-count-dependent and not a trustworthy tension. Two smaller correctness notes for when forces matter: `WIND_GAIN = 1.1` bakes in ~1.8× the physical ½ρ ≈ 0.61 kg/m³ — switch to explicit `0.5 * 1.225 * v² * Cp`; and gravity is applied along boat-local −Y inside a group that rotates with heel and pitch, so once the boat heels, sail gravity tilts with it — rotate world-down into the boat frame using the `heelDeg`/`pitchDeg` you already receive.
+
+### Wire the seam backend-first — your own code is 90% there
+
+There is currently no force path at all: the cloth extracts nothing, no endpoint accepts forces, `cat_forces` hardwires the sail to zero, and as a consequence `update_stability`'s moment-based capsize checks are dead code (`m_heel = m_pitch = 0.0` forever — knockdown can only trigger on the angle threshold, never the moment one, and nothing produces the angle).
+
+Before wiring the cloth wrench across HTTP, enable the coefficient sail you already built. `foil_force_2d` works in air with ρ = 1.225; `p.sail` is parameterized (90 m², AR 5, CE at z = −8); `ctrl.sail_trim` already arrives mapped to a 0–15° sheet angle. The apparent-wind-at-CE code sitting in main.rs's telemetry section belongs inside `cat_forces`:
+
+```rust
+// 3. Sail — coefficient model at the CE
+let h = -p.sail.r[2];                       // CE height above CG
+let v_ce = [ground_lin[0] - omega[1] * h,   // ground-relative air sees ground velocity
+            ground_lin[1] + omega[0] * h];
+let inflow = [wind_body[0] - v_ce[0], wind_body[1] - v_ce[1]];
+let boom = /* trim angle, sign = leeward side, weathervane clamp when AWA < trim */;
+let f = foil_force_2d(inflow, [boom.cos(), boom.sin()], &p.sail, 1.225);
+let f_tau = apply_at(f, p.sail.r);
+for i in 0..6 { tau[i] += f_tau[i]; }
+let m_heel = f_tau[3].abs();
+let m_pitch = f_tau[4].abs();
+```
+
+Note the inflow distinction your hydro foils already encode: water foils correctly use −ν (through-water velocity); the air foil must use wind minus *ground* velocity, which is what `ground_lin` gives you. Doing this first buys three things: the boat sails headlessly (routing, `monitor_sim.py`, autopilot tuning don't hostage the physics to a browser tab — the concern I raised last time, resolved by your own code); heel goes nonzero, which immediately exercises the rotation-matrix fix and the capsize logic monitor_sim.py exists to watch; and you get a baseline to validate the cloth wrench against. Then add the cloth channel as a refinement: `POST /v1/sim/sail_wrench {seq, f_body, tau_body}`, backend applies it with a staleness timeout that decays back to the coefficient model — never to a frozen last-value, never to zero-force. The frame mapping (glTF sail space → the extra `rotation=[0,π,0]` wrapper in BoatModel → your negated-yaw NED-ish body frame where `heading = −ψ` and `cog = atan2(−E, N)`) is exactly one function with exactly one unit test: push pure forward drive through it and assert positive surge. Right now those conventions live in three files and nobody's head; the negated yaw is self-consistent but undocumented, and adding a fourth frame without writing it down is how force signs flip. While you're in `cat_forces`: hull/rig windage — your "or should" — is a one-liner flat-plate drag term per axis on projected areas, and it's what makes bare-poles drift and the capsized states behave.
+
+### Generalizing past one hardcoded spinnaker
+
+The component is a one-off: one glb path, two hardcoded anchor vectors "verified against lagoon-450s.glb", corner detection by heuristic (highest vertex = head, nearest-the-ring = tack, farthest-from-both = clew), and slider keys named `spinnaker*`. The heuristics happen to work for this asym and will misfire on a square-top main or symmetric kite. The data-driven version: name the anchor empties and sail corners in Blender (vertex groups or empties in the rig glTF), have a per-sail config reference them plus a coefficient-set/control binding, and instantiate one cloth per active sail. Also unify trim — right now `control.sail_trim` goes to the backend while the cloth clew is driven by an unrelated UI slider, so the moment the backend sail is enabled, the physics trim and the visual trim diverge. One trim value should drive both the backend sheet angle and the clew rope rest length; that coherence was the point of the architecture.
+
+### Smaller things
+
+- `web/src/sim/boatPhysics.ts` `stepBoat` is dead code (only `createInitialBoatState` is used) — delete it before someone "fixes" physics there.
+- Two serialized HTTP round-trips per rendered frame works on localhost; folding control into a single POST that returns state halves it, and a WebSocket is the eventual answer once forces flow.
+- `velocityWater` sent to the frontend is reconstructed from heading alone, ignoring the `leeway_deg` you computed — your vectors overlay draws a leeway-free water track.
+- `ROPE_SLACK = 1.12` is dead after the first frame; sliders overwrite it every tick.
+- The spatial-hash weld can miss pairs within epsilon that straddle a cell boundary — probe neighboring cells or accept the occasional seam.
+- Capsized states are terminal in `update_stability` with no righting path — fine if intentional, worth a comment.
+- `DRAG = 0.994` at 480 substeps/s retains ~5.6% of velocity per second — heavy damping that will smother flogging dynamics once you want them; revisit alongside the clamp removal.
+
+Priority order if it were mine: rotation matrix fix + frame test, backend coefficient sail + windage (boat actually sails), Open-Meteo/naming cleanup, cloth timestep + clamp removal, wrench extraction + endpoint, then the multi-sail data model. The first two are a day's work and transform what the system *is*; everything else refines it.

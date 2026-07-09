@@ -1,0 +1,736 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sail Force Rig</title>
+<style>
+  :root{
+    --bg:#0b1420; --panel:rgba(13,24,37,.92); --line:#1e3348;
+    --ink:#dce8f2; --dim:#7c93a6; --faint:#4a6076;
+    --accent:#4fd8eb; --drive:#58d68d; --side:#f4b25e;
+    --halyard:#ff8fa3; --tackline:#7ce0a0; --sheet:#ffd166; --luff:#b6a4ff;
+    --mono:ui-monospace,'Cascadia Code','SF Mono',Menlo,Consolas,monospace;
+    --cond:'Avenir Next Condensed','Arial Narrow',system-ui,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--ink);
+    font:13px/1.45 var(--cond);}
+  #scene{position:fixed;inset:0;display:block}
+  /* ---------- instrument panel ---------- */
+  #panel{position:fixed;top:12px;left:12px;width:302px;max-height:calc(100vh - 24px);
+    overflow-y:auto;background:var(--panel);border:1px solid var(--line);
+    border-radius:10px;backdrop-filter:blur(6px);padding:14px 16px 10px;}
+  #panel::-webkit-scrollbar{width:8px}
+  #panel::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px}
+  h1{font:600 15px/1.2 var(--cond);letter-spacing:.14em;text-transform:uppercase}
+  h1 small{color:var(--dim);letter-spacing:.06em;text-transform:none;font-weight:400;display:block;margin-top:2px}
+  .sec{border-top:1px solid var(--line);margin-top:12px;padding-top:9px}
+  .eyebrow{font-size:10px;letter-spacing:.22em;text-transform:uppercase;color:var(--faint);margin-bottom:7px}
+  .row{display:flex;align-items:center;gap:8px;margin:5px 0}
+  .row label{flex:0 0 92px;color:var(--dim)}
+  .row input[type=range]{flex:1;accent-color:var(--accent);height:14px}
+  .row .val{flex:0 0 66px;text-align:right;font-family:var(--mono);font-size:12px}
+  .row input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
+  .row .cb-label{color:var(--dim)}
+  /* force readouts */
+  table.forces{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12.5px}
+  table.forces td{padding:1.5px 0}
+  table.forces td:first-child{color:var(--dim);font-family:var(--cond);font-size:12.5px}
+  table.forces td:last-child{text-align:right;font-variant-numeric:tabular-nums}
+  .pos{color:var(--drive)} .neg{color:#ff7b8a}
+  /* attachment bars */
+  .att{margin:4px 0}
+  .att .lbl{display:flex;justify-content:space-between;font-family:var(--mono);font-size:12px}
+  .att .lbl span:first-child{font-family:var(--cond);color:var(--dim)}
+  .att .bar{height:4px;background:#122334;border-radius:2px;margin-top:2px;overflow:hidden}
+  .att .bar i{display:block;height:100%;width:0%;border-radius:2px;transition:width .12s linear}
+  #att-halyard i{background:var(--halyard)} #att-tackline i{background:var(--tackline)}
+  #att-sheet i{background:var(--sheet)} #att-luff i{background:var(--luff)}
+  #residual{color:var(--faint);font-family:var(--mono);font-size:11px;margin-top:5px}
+  /* polar */
+  #polarwrap{position:relative;margin-top:6px}
+  #polar{display:block;width:100%;border:1px solid var(--line);border-radius:8px;background:#0a1119}
+  .legend{display:flex;gap:14px;font-size:11px;color:var(--dim);margin-top:4px}
+  .legend i{display:inline-block;width:9px;height:2px;vertical-align:middle;margin-right:4px}
+  button{background:#12283a;border:1px solid var(--line);color:var(--ink);border-radius:6px;
+    padding:5px 10px;font:12px var(--cond);letter-spacing:.05em;cursor:pointer}
+  button:hover{border-color:var(--accent);color:var(--accent)}
+  button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  .btnrow{display:flex;gap:8px;margin-top:8px}
+  #foot{border-top:1px solid var(--line);margin-top:12px;padding-top:8px;
+    font-size:10.5px;color:var(--faint);line-height:1.5}
+  #csvbox{position:fixed;inset:20% 25%;z-index:9;display:none;background:var(--panel);
+    border:1px solid var(--accent);border-radius:10px;padding:12px}
+  #csvbox textarea{width:100%;height:calc(100% - 40px);background:#0a1119;color:var(--ink);
+    border:1px solid var(--line);font:11px var(--mono);padding:6px}
+  #stats{position:fixed;right:12px;bottom:10px;font:11px var(--mono);color:var(--faint);text-align:right}
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+
+<div id="panel">
+  <h1>Sail Force Rig<small>fixed rig · swept wind · extracted wrench</small></h1>
+
+  <div class="sec">
+    <div class="eyebrow">Wind</div>
+    <div class="row"><label for="wspd">Speed</label>
+      <input id="wspd" type="range" min="0" max="20" step="0.1" value="6">
+      <span class="val" id="wspd-v"></span></div>
+    <div class="row"><label for="wdir">From (° off bow)</label>
+      <input id="wdir" type="range" min="0" max="359" step="1" value="110">
+      <span class="val" id="wdir-v"></span></div>
+    <div class="row"><input id="sweep" type="checkbox"><span class="cb-label">Sweep direction</span>
+      <input id="swrate" type="range" min="1" max="30" step="1" value="6" style="flex:1">
+      <span class="val" id="swrate-v"></span></div>
+    <div class="row"><input id="gusts" type="checkbox"><span class="cb-label">Gusts (±18%)</span></div>
+  </div>
+
+  <div class="sec">
+    <div class="eyebrow">Rig &amp; trim</div>
+    <div class="row"><label for="sheet">Sheet</label>
+      <input id="sheet" type="range" min="0.55" max="1.8" step="0.01" value="1.0">
+      <span class="val" id="sheet-v"></span></div>
+    <div class="row"><label for="tack">Tack line</label>
+      <input id="tack" type="range" min="0.9" max="1.6" step="0.01" value="1.05">
+      <span class="val" id="tack-v"></span></div>
+    <div class="row"><label for="full">Fullness</label>
+      <input id="full" type="range" min="0.97" max="1.12" step="0.005" value="1.03">
+      <span class="val" id="full-v"></span></div>
+    <div class="row"><input id="luff" type="checkbox"><span class="cb-label">Pin luff to forestay (hanked jib)</span></div>
+    <div class="row"><input id="arrows" type="checkbox" checked><span class="cb-label">Force arrows</span>
+      <input id="shade" type="checkbox" checked><span class="cb-label">Pressure shading</span></div>
+  </div>
+
+  <div class="sec">
+    <div class="eyebrow">Aerodynamic wrench · about mast base</div>
+    <table class="forces">
+      <tr><td>Drive (fwd)</td><td id="f-drive">–</td></tr>
+      <tr><td>Side (stbd +)</td><td id="f-side">–</td></tr>
+      <tr><td>Vertical</td><td id="f-vert">–</td></tr>
+      <tr><td>|F| total</td><td id="f-mag">–</td></tr>
+      <tr><td>Heel moment</td><td id="m-heel">–</td></tr>
+      <tr><td>Pitch moment</td><td id="m-pitch">–</td></tr>
+      <tr><td>Yaw moment</td><td id="m-yaw">–</td></tr>
+    </table>
+  </div>
+
+  <div class="sec">
+    <div class="eyebrow">Attachment loads (on rig)</div>
+    <div class="att" id="att-halyard"><div class="lbl"><span>Halyard (head)</span><span class="v">–</span></div><div class="bar"><i></i></div></div>
+    <div class="att" id="att-tackline"><div class="lbl"><span>Tack line</span><span class="v">–</span></div><div class="bar"><i></i></div></div>
+    <div class="att" id="att-sheet"><div class="lbl"><span>Sheet (clew)</span><span class="v">–</span></div><div class="bar"><i></i></div></div>
+    <div class="att" id="att-luff" style="display:none"><div class="lbl"><span>Luff (Σ hanks)</span><span class="v">–</span></div><div class="bar"><i></i></div></div>
+    <div id="residual">balance residual –</div>
+  </div>
+
+  <div class="sec">
+    <div class="eyebrow">Polar · force vs wind direction</div>
+    <div id="polarwrap"><canvas id="polar" width="270" height="270"></canvas></div>
+    <div class="legend">
+      <span><i style="background:var(--drive)"></i>drive</span>
+      <span><i style="background:var(--side)"></i>|side|</span>
+      <span><i style="background:#5c7f97"></i>|F|</span>
+    </div>
+    <div class="btnrow">
+      <button id="reset">Reset sail</button>
+      <button id="clear">Clear polar</button>
+      <button id="csv">Copy CSV</button>
+    </div>
+  </div>
+
+  <div id="foot">
+    Frame: +Z fwd · +X stbd · +Y up. Wind angle = direction FROM, 0° = over the bow, 90° = starboard beam.
+    Moments about mast base (0,0,0): +heel = mast to port · +pitch = bow-down · +yaw = bow to stbd.
+    Load model is ram pressure (C<sub>p</sub>=1.2, ρ=1.225) on the flying shape with relative-velocity damping —
+    honest downwind, no leading-edge suction upwind (strip lift model is the upgrade path).
+  </div>
+</div>
+
+<div id="csvbox">
+  <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+    <span class="eyebrow" style="margin:0">Sampled polar data</span>
+    <button id="csvclose">Close</button>
+  </div>
+  <textarea id="csvtext" readonly></textarea>
+</div>
+
+<div id="stats"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+'use strict';
+/* =====================================================================
+   SAIL FORCE RIG — mini sim
+   Cloth sail on a fixed rig; wind sweeps around it; outputs the forces.
+
+   Deliberate choices (mirroring the skiff review):
+   · Fixed-timestep accumulator — sim speed independent of display Hz.
+   · No per-particle load clamps — forces scale physically with v²;
+     the only guard is a far-supersonic velocity cap + NaN reset.
+   · Pressure uses RELATIVE velocity (wind − cloth) — flogging damps
+     itself physically instead of via heavy global drag.
+   · Boat force = summed aero wrench (ΣF, Σ r×F about mast base) —
+     no constraint-force extraction needed for the resultant.
+   · Attachment loads (halyard/tack/sheet) measured as pin reactions,
+     and checked live against the wrench: ΣR ≈ F_aero + W_sail.
+   · Ropes are unilateral (pull only); wind convention is FROM.
+   ===================================================================== */
+
+/* ============================ PHYSICS ================================
+   Plain typed-array core, no THREE dependency (unit-testable in node).
+   ==================================================================== */
+/*==PHYSICS-BEGIN==*/
+const P = {
+  RHO: 1.225,          // air density kg/m^3
+  CP: 1.2,             // ram-pressure coefficient (stagnation + base suction)
+  G: 9.81,
+  CLOTH_KGM2: 0.25,    // areal density of sailcloth
+  ROPE_NODE_KG: 0.05,
+  FRAME_HZ: 60,        // fixed sim frame rate (accumulator-driven)
+  SUBSTEPS: 8,         // h = 1/480 s
+  ITER: 6,             // Gauss–Seidel projection iterations per substep
+  DAMP: 0.999,         // light structural damping; aero does the real damping
+  VMAX: 60,            // m/s — inert explosion guard, far above dynamics
+  N: 18,               // triangular grid rows -> (N+1)(N+2)/2 cloth nodes
+};
+
+// Rig geometry (metres). Mast base at origin = moment reference.
+const RIG = {
+  mastTop:   {x:0, y:10.0, z:0},
+  halyard:   {x:0, y:9.6,  z:0.15},   // masthead sheave
+  bowsprit:  {x:0, y:0.9,  z:4.6},    // tack anchor
+  sheetLead: {x:1.9, y:0.5, z:-3.2},  // stbd-quarter block
+  // Sail rest corners (flat, in the centreline plane)
+  head: {x:0, y:9.15, z:0.55},
+  tack: {x:0, y:1.15, z:4.35},
+  clew: {x:0, y:1.30, z:-2.40},
+};
+
+function vlen3(x,y,z){ return Math.sqrt(x*x+y*y+z*z); }
+
+function buildSail(){
+  const N = P.N;
+  const cloth = (N+1)*(N+2)/2;
+  const idx = (i,j)=> i*(i+1)/2 + j;
+
+  // --- particles: flat triangular grid, barycentric over (head,tack,clew)
+  const pos=[], rest=[];
+  const A=RIG.head, B=RIG.tack, C=RIG.clew;
+  for(let i=0;i<=N;i++){
+    const t=i/N;
+    const Lx=A.x+(B.x-A.x)*t, Ly=A.y+(B.y-A.y)*t, Lz=A.z+(B.z-A.z)*t;   // along luff
+    const Rx=A.x+(C.x-A.x)*t, Ry=A.y+(C.y-A.y)*t, Rz=A.z+(C.z-A.z)*t;   // along leech
+    for(let j=0;j<=i;j++){
+      const s=i===0?0:j/i;
+      pos.push(Lx+(Rx-Lx)*s, Ly+(Ry-Ly)*s, Lz+(Rz-Lz)*s);
+    }
+  }
+
+  // --- triangles + deduped edge constraints from topology
+  const tris=[]; const cons=[]; const seen=new Set();
+  const edge=(a,b)=>{ const k=a<b? a*100000+b : b*100000+a;
+    if(seen.has(k))return; seen.add(k);
+    const dx=pos[3*a]-pos[3*b], dy=pos[3*a+1]-pos[3*b+1], dz=pos[3*a+2]-pos[3*b+2];
+    cons.push({a,b,rest:vlen3(dx,dy,dz),base:vlen3(dx,dy,dz),uni:false,cloth:true}); };
+  for(let i=0;i<N;i++) for(let j=0;j<=i;j++){
+    const a=idx(i,j), b=idx(i+1,j), c=idx(i+1,j+1);
+    tris.push(a,b,c); edge(a,b); edge(b,c); edge(c,a);
+    if(j<i){ const d=idx(i,j+1); tris.push(a,c,d); edge(c,d); edge(a,d); }
+  }
+  const clothCons = cons.length;
+
+  // --- masses
+  let area=0;
+  for(let t=0;t<tris.length;t+=3){
+    const a=tris[t]*3,b=tris[t+1]*3,c=tris[t+2]*3;
+    const ux=pos[b]-pos[a],uy=pos[b+1]-pos[a+1],uz=pos[b+2]-pos[a+2];
+    const vx=pos[c]-pos[a],vy=pos[c+1]-pos[a+1],vz=pos[c+2]-pos[a+2];
+    area += 0.5*vlen3(uy*vz-uz*vy, uz*vx-ux*vz, ux*vy-uy*vx);
+  }
+  const mNode = area*P.CLOTH_KGM2/cloth;
+
+  // --- ropes: corner -> anchor chains, unilateral, last node pinned
+  // bucket: which readout a pinned node's reactions accumulate into
+  const bucket = {};                       // particleIndex -> name
+  const ropes = {};                        // name -> {consIdx[], baseSeg}
+  function addRope(name, cornerIdx, anchor, segs, slack){
+    let prevIdx = cornerIdx;
+    const p0={x:pos[3*cornerIdx],y:pos[3*cornerIdx+1],z:pos[3*cornerIdx+2]};
+    const consIdx=[];
+    for(let k=1;k<=segs;k++){
+      const t=k/segs;
+      pos.push(p0.x+(anchor.x-p0.x)*t, p0.y+(anchor.y-p0.y)*t, p0.z+(anchor.z-p0.z)*t);
+      const ni = pos.length/3 - 1;
+      const dx=pos[3*prevIdx]-pos[3*ni], dy=pos[3*prevIdx+1]-pos[3*ni+1], dz=pos[3*prevIdx+2]-pos[3*ni+2];
+      const L=vlen3(dx,dy,dz);
+      cons.push({a:prevIdx,b:ni,rest:L*slack,base:L,uni:true,cloth:false});
+      consIdx.push(cons.length-1);
+      prevIdx=ni;
+    }
+    bucket[prevIdx]=name;                  // the anchor node
+    ropes[name]={consIdx, anchorIdx:prevIdx, anchor:{...anchor},
+                 baseSeg: vlen3(anchor.x-p0.x,anchor.y-p0.y,anchor.z-p0.z)/segs, slack};
+    return prevIdx;
+  }
+  const headI=idx(0,0), tackI=idx(P.N,0), clewI=idx(P.N,P.N);
+  addRope('halyard',  headI, RIG.halyard,  3, 0.995);
+  addRope('tackline', tackI, RIG.bowsprit, 6, 1.05);
+  addRope('sheet',    clewI, RIG.sheetLead,10, 1.00);
+
+  const n = pos.length/3;
+  const S = {
+    n, cloth, clothCons, tris, cons, ropes, bucket, area,
+    pos:  Float64Array.from(pos),
+    prev: Float64Array.from(pos),
+    rest: Float64Array.from(pos),
+    force:new Float64Array(n*3),
+    aeroLoad:new Float64Array(n),          // per-node |aero| for shading
+    mass: new Float64Array(n),
+    invM: new Float64Array(n),
+    target:new Float64Array(n*3),          // for pinned nodes
+    luffPinned:false,
+    luffIdx: Array.from({length:P.N+1},(_,i)=>idx(i,0)),
+    headI, tackI, clewI,
+    // frame-averaged outputs
+    out:{F:{x:0,y:0,z:0}, T:{x:0,y:0,z:0},
+         R:{halyard:{x:0,y:0,z:0},tackline:{x:0,y:0,z:0},sheet:{x:0,y:0,z:0},luff:{x:0,y:0,z:0}},
+         ce:{x:0,y:0,z:0}, residual:0},
+  };
+  for(let i=0;i<n;i++){
+    S.mass[i] = i<cloth ? mNode : P.ROPE_NODE_KG;
+    S.invM[i] = 1/S.mass[i];
+  }
+  for(const name of Object.keys(ropes)){
+    const ai=ropes[name].anchorIdx;
+    S.invM[ai]=0;
+    S.target.set([S.pos[3*ai],S.pos[3*ai+1],S.pos[3*ai+2]],3*ai);
+  }
+  return S;
+}
+
+function setLuffPinned(S,on){
+  S.luffPinned=on;
+  for(const i of S.luffIdx){
+    if(on){ S.invM[i]=0; S.bucket[i]='luff';
+      S.target[3*i]=S.rest[3*i]; S.target[3*i+1]=S.rest[3*i+1]; S.target[3*i+2]=S.rest[3*i+2];
+      S.pos[3*i]=S.rest[3*i]; S.pos[3*i+1]=S.rest[3*i+1]; S.pos[3*i+2]=S.rest[3*i+2];
+      S.prev.set(S.pos.subarray(3*i,3*i+3),3*i);
+    } else { S.invM[i]=1/S.mass[i]; delete S.bucket[i]; }
+  }
+}
+
+function setSheet(S,f){ for(const ci of S.ropes.sheet.consIdx)   S.cons[ci].rest=S.ropes.sheet.baseSeg*f; }
+function setTack(S,f){ for(const ci of S.ropes.tackline.consIdx) S.cons[ci].rest=S.ropes.tackline.baseSeg*f; }
+function setFullness(S,f){ for(let c=0;c<S.clothCons;c++) S.cons[c].rest=S.cons[c].base*f; }
+
+function resetSail(S){
+  S.pos.set(S.rest); S.prev.set(S.rest); S.force.fill(0); S.aeroLoad.fill(0);
+  if(S.luffPinned) setLuffPinned(S,true);
+}
+
+/* One fixed sim frame = SUBSTEPS Verlet+projection substeps.
+   wind = {x,y,z} m/s (uniform). Returns frame-averaged outputs in S.out. */
+function stepFrame(S, wind){
+  const h = 1/(P.FRAME_HZ*P.SUBSTEPS), h2=h*h, inv_h2=1/h2;
+  const {pos,prev,force,invM,mass,tris,cons,bucket,aeroLoad}=S;
+  const n=S.n;
+  // frame accumulators
+  let Fx=0,Fy=0,Fz=0, Tx=0,Ty=0,Tz=0, ceX=0,ceY=0,ceZ=0, ceW=0;
+  const R={halyard:{x:0,y:0,z:0},tackline:{x:0,y:0,z:0},sheet:{x:0,y:0,z:0},luff:{x:0,y:0,z:0}};
+  aeroLoad.fill(0);
+  const vmaxStep = P.VMAX*h;
+
+  for(let sub=0; sub<P.SUBSTEPS; sub++){
+    // ---- external forces: gravity + relative-velocity ram pressure
+    for(let i=0;i<n;i++){ force[3*i]=0; force[3*i+1]=-P.G*mass[i]; force[3*i+2]=0; }
+    for(let t=0;t<tris.length;t+=3){
+      const a=tris[t],b=tris[t+1],c=tris[t+2], a3=3*a,b3=3*b,c3=3*c;
+      const e1x=pos[b3]-pos[a3], e1y=pos[b3+1]-pos[a3+1], e1z=pos[b3+2]-pos[a3+2];
+      const e2x=pos[c3]-pos[a3], e2y=pos[c3+1]-pos[a3+1], e2z=pos[c3+2]-pos[a3+2];
+      let nx=e1y*e2z-e1z*e2y, ny=e1z*e2x-e1x*e2z, nz=e1x*e2y-e1y*e2x;
+      const n2=vlen3(nx,ny,nz); if(n2<1e-9) continue;
+      const areaT=0.5*n2; nx/=n2; ny/=n2; nz/=n2;
+      // cloth velocity at centroid from last substep displacement
+      const vx=((pos[a3]-prev[a3])+(pos[b3]-prev[b3])+(pos[c3]-prev[c3]))/(3*h);
+      const vy=((pos[a3+1]-prev[a3+1])+(pos[b3+1]-prev[b3+1])+(pos[c3+1]-prev[c3+1]))/(3*h);
+      const vz=((pos[a3+2]-prev[a3+2])+(pos[b3+2]-prev[b3+2])+(pos[c3+2]-prev[c3+2]))/(3*h);
+      const rx=wind.x-vx, ry=wind.y-vy, rz=wind.z-vz;
+      const vn=rx*nx+ry*ny+rz*nz;
+      const q=0.5*P.RHO*P.CP*vn*Math.abs(vn);       // signed stagnation pressure
+      const fx=nx*q*areaT, fy=ny*q*areaT, fz=nz*q*areaT;
+      const f3=1/3;
+      force[a3]+=fx*f3; force[a3+1]+=fy*f3; force[a3+2]+=fz*f3;
+      force[b3]+=fx*f3; force[b3+1]+=fy*f3; force[b3+2]+=fz*f3;
+      force[c3]+=fx*f3; force[c3+1]+=fy*f3; force[c3+2]+=fz*f3;
+      const fm=vlen3(fx,fy,fz)*f3;
+      aeroLoad[a]+=fm; aeroLoad[b]+=fm; aeroLoad[c]+=fm;
+      // wrench about mast base (origin) + force-weighted centroid for CE marker
+      const cx=(pos[a3]+pos[b3]+pos[c3])*f3, cy=(pos[a3+1]+pos[b3+1]+pos[c3+1])*f3, cz=(pos[a3+2]+pos[b3+2]+pos[c3+2])*f3;
+      Fx+=fx; Fy+=fy; Fz+=fz;
+      Tx+=cy*fz-cz*fy; Ty+=cz*fx-cx*fz; Tz+=cx*fy-cy*fx;
+      const w=vlen3(fx,fy,fz); ceX+=cx*w; ceY+=cy*w; ceZ+=cz*w; ceW+=w;
+    }
+    // ---- integrate (Verlet). No load clamp; VMAX is a pure explosion guard.
+    for(let i=0;i<n;i++){
+      if(invM[i]===0) continue;
+      const i3=3*i;
+      let vx=(pos[i3]-prev[i3])*P.DAMP + force[i3]*invM[i]*h2;
+      let vy=(pos[i3+1]-prev[i3+1])*P.DAMP + force[i3+1]*invM[i]*h2;
+      let vz=(pos[i3+2]-prev[i3+2])*P.DAMP + force[i3+2]*invM[i]*h2;
+      const sp=vlen3(vx,vy,vz);
+      if(sp>vmaxStep){ const s=vmaxStep/sp; vx*=s; vy*=s; vz*=s; }
+      prev[i3]=pos[i3]; prev[i3+1]=pos[i3+1]; prev[i3+2]=pos[i3+2];
+      pos[i3]+=vx; pos[i3+1]+=vy; pos[i3+2]+=vz;
+    }
+    // ---- constraint projection; accumulate pin reactions (Newton pairs)
+    for(let it=0; it<P.ITER; it++){
+      for(let c=0;c<cons.length;c++){
+        const C=cons[c], a3=3*C.a, b3=3*C.b;
+        let dx=pos[b3]-pos[a3], dy=pos[b3+1]-pos[a3+1], dz=pos[b3+2]-pos[a3+2];
+        const L=vlen3(dx,dy,dz); if(L<1e-7) continue;
+        if(C.uni && L<=C.rest) continue;         // ropes only pull
+        const wa=invM[C.a], wb=invM[C.b], ws=wa+wb; if(ws===0) continue;
+        const diff=(L-C.rest)/L;
+        const cx=dx*diff, cy=dy*diff, cz=dz*diff; // full correction vector (a->b sense)
+        if(wa>0){ const s=wa/ws; pos[a3]+=cx*s; pos[a3+1]+=cy*s; pos[a3+2]+=cz*s; }
+        if(wb>0){ const s=wb/ws; pos[b3]-=cx*s; pos[b3+1]-=cy*s; pos[b3+2]-=cz*s; }
+        // reaction on a pinned end = -(m_free * Δx_free)/h², pointing sail-ward
+        if(wa===0 && wb>0){ const k=bucket[C.a]; if(k){ const s=mass[C.b]*(wb/ws)*inv_h2;
+          R[k].x+=cx*s; R[k].y+=cy*s; R[k].z+=cz*s; } }
+        else if(wb===0 && wa>0){ const k=bucket[C.b]; if(k){ const s=mass[C.a]*(wa/ws)*inv_h2;
+          R[k].x-=cx*s; R[k].y-=cy*s; R[k].z-=cz*s; } }
+      }
+    }
+    // ---- enforce pins
+    for(let i=0;i<n;i++) if(invM[i]===0){
+      const i3=3*i;
+      pos[i3]=S.target[3*i]; pos[i3+1]=S.target[3*i+1]; pos[i3+2]=S.target[3*i+2];
+      prev[i3]=pos[i3]; prev[i3+1]=pos[i3+1]; prev[i3+2]=pos[i3+2];
+    }
+  }
+
+  // NaN guard: reset to rest shape
+  if(!isFinite(pos[0])||!isFinite(pos[3*(n-1)+1])){ resetSail(S); return; }
+  let bad=false;
+  for(let i=0;i<n;i+=7){ if(!isFinite(pos[3*i])){bad=true;break;} }
+  if(bad){ resetSail(S); return; }
+
+  // frame averages
+  const inv=1/P.SUBSTEPS, o=S.out;
+  o.F.x=Fx*inv; o.F.y=Fy*inv; o.F.z=Fz*inv;
+  o.T.x=Tx*inv; o.T.y=Ty*inv; o.T.z=Tz*inv;
+  for(const k of Object.keys(R)){ o.R[k].x=R[k].x*inv; o.R[k].y=R[k].y*inv; o.R[k].z=R[k].z*inv; }
+  if(ceW>1e-9){ o.ce.x=ceX/ceW; o.ce.y=ceY/ceW; o.ce.z=ceZ/ceW; }
+  for(let i=0;i<S.cloth;i++) aeroLoad[i]*=inv;
+  // balance check: Σ pin reactions should equal aero + weight of free nodes
+  let W=0; for(let i=0;i<n;i++) if(invM[i]>0) W+=mass[i]*P.G;
+  const sx=o.R.halyard.x+o.R.tackline.x+o.R.sheet.x+o.R.luff.x;
+  const sy=o.R.halyard.y+o.R.tackline.y+o.R.sheet.y+o.R.luff.y;
+  const sz=o.R.halyard.z+o.R.tackline.z+o.R.sheet.z+o.R.luff.z;
+  o.residual = vlen3(sx-o.F.x, sy-(o.F.y-W), sz-o.F.z) / (vlen3(o.F.x,o.F.y,o.F.z)+1e-6);
+}
+
+// Wind FROM angle (deg off bow, +stbd) -> velocity vector. +Z fwd, +X stbd.
+function windVector(speed, fromDeg){
+  const r=fromDeg*Math.PI/180;
+  return {x:-Math.sin(r)*speed, y:0, z:-Math.cos(r)*speed};
+}
+/*==PHYSICS-END==*/
+
+/* ============================ RENDER ================================ */
+const canvas=document.getElementById('scene');
+const renderer=new THREE.WebGLRenderer({canvas,antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x0b1420);
+scene.fog=new THREE.Fog(0x0b1420,55,140);
+const camera=new THREE.PerspectiveCamera(45,1,0.1,400);
+
+// minimal orbit (drag rotate, wheel zoom) — no external controls dependency
+const orbit={az:0.9,pol:1.15,dist:24,target:new THREE.Vector3(0,4.6,0)};
+function applyCam(){
+  const sp=Math.sin(orbit.pol),cp=Math.cos(orbit.pol);
+  camera.position.set(
+    orbit.target.x+orbit.dist*sp*Math.sin(orbit.az),
+    orbit.target.y+orbit.dist*cp,
+    orbit.target.z+orbit.dist*sp*Math.cos(orbit.az));
+  camera.lookAt(orbit.target);
+}
+let dragging=false,px=0,py=0;
+canvas.addEventListener('pointerdown',e=>{dragging=true;px=e.clientX;py=e.clientY;canvas.setPointerCapture(e.pointerId);});
+canvas.addEventListener('pointermove',e=>{if(!dragging)return;
+  orbit.az-=(e.clientX-px)*0.005; orbit.pol=Math.min(1.52,Math.max(0.12,orbit.pol-(e.clientY-py)*0.005));
+  px=e.clientX;py=e.clientY;});
+canvas.addEventListener('pointerup',()=>dragging=false);
+canvas.addEventListener('wheel',e=>{e.preventDefault();
+  orbit.dist=Math.min(70,Math.max(6,orbit.dist*(1+e.deltaY*0.001)));},{passive:false});
+
+scene.add(new THREE.HemisphereLight(0x9fc2d8,0x0e1a26,0.9));
+const sun=new THREE.DirectionalLight(0xfff2dd,0.85); sun.position.set(18,26,10); scene.add(sun);
+
+// water + rig
+const grid=new THREE.GridHelper(160,64,0x1d3850,0x14283c); grid.position.y=0; scene.add(grid);
+function tube(a,b,r,color){
+  const d=new THREE.Vector3(b.x-a.x,b.y-a.y,b.z-a.z), L=d.length();
+  const m=new THREE.Mesh(new THREE.CylinderGeometry(r,r,L,10),
+    new THREE.MeshStandardMaterial({color,roughness:0.55,metalness:0.35}));
+  m.position.set((a.x+b.x)/2,(a.y+b.y)/2,(a.z+b.z)/2);
+  m.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),d.normalize());
+  scene.add(m); return m;
+}
+tube({x:0,y:0,z:0},RIG.mastTop,0.09,0x8fa8bc);                    // mast
+tube({x:0,y:0.75,z:-3.6},{x:0,y:0.75,z:4.7},0.07,0x7691a6);      // spine/deck line
+tube({x:0,y:0.75,z:4.0},RIG.bowsprit,0.05,0x7691a6);             // sprit tip
+tube(RIG.mastTop,RIG.bowsprit,0.012,0x40566b);                   // forestay
+tube({x:RIG.sheetLead.x,y:0,z:RIG.sheetLead.z},RIG.sheetLead,0.04,0x7691a6); // sheet post
+const deck=new THREE.Mesh(new THREE.BoxGeometry(3.4,0.16,8.6),
+  new THREE.MeshStandardMaterial({color:0x14232f,roughness:0.9}));
+deck.position.set(0,0.68,0.4); scene.add(deck);
+for(const [p,c] of [[RIG.halyard,0xff8fa3],[RIG.bowsprit,0x7ce0a0],[RIG.sheetLead,0xffd166]]){
+  const s=new THREE.Mesh(new THREE.SphereGeometry(0.14,12,12),
+    new THREE.MeshStandardMaterial({color:c,emissive:c,emissiveIntensity:0.35}));
+  s.position.set(p.x,p.y,p.z); scene.add(s);
+}
+
+/* ---- sail mesh + ropes ---- */
+const S=buildSail();
+const sailGeo=new THREE.BufferGeometry();
+sailGeo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(S.cloth*3),3));
+sailGeo.setAttribute('color',new THREE.BufferAttribute(new Float32Array(S.cloth*3).fill(1),3));
+sailGeo.setIndex(S.tris);
+const sailMat=new THREE.MeshStandardMaterial({vertexColors:true,side:THREE.DoubleSide,
+  roughness:0.85,metalness:0.0});
+scene.add(new THREE.Mesh(sailGeo,sailMat));
+
+const ropeLines={};
+for(const name of Object.keys(S.ropes)){
+  const segs=S.ropes[name].consIdx.length;
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.BufferAttribute(new Float32Array((segs+1)*3),3));
+  const colors={halyard:0xff8fa3,tackline:0x7ce0a0,sheet:0xffd166};
+  const l=new THREE.Line(g,new THREE.LineBasicMaterial({color:colors[name]}));
+  scene.add(l); ropeLines[name]=l;
+}
+
+/* ---- arrows ---- */
+const windArrow=new THREE.ArrowHelper(new THREE.Vector3(0,0,-1),new THREE.Vector3(),3,0x4fd8eb,0.9,0.45);
+scene.add(windArrow);
+const forceArrow=new THREE.ArrowHelper(new THREE.Vector3(1,0,0),new THREE.Vector3(),1,0xdce8f2,0.7,0.35);
+scene.add(forceArrow);
+const attArrows={};
+for(const [name,c] of [['halyard',0xff8fa3],['tackline',0x7ce0a0],['sheet',0xffd166],['luff',0xb6a4ff]]){
+  const a=new THREE.ArrowHelper(new THREE.Vector3(0,1,0),new THREE.Vector3(),1,c,0.4,0.22);
+  a.visible=false; scene.add(a); attArrows[name]=a;
+}
+
+/* ============================ UI ==================================== */
+const $=id=>document.getElementById(id);
+const ctrl={speed:6,dir:110,sweep:false,rate:6,gusts:false,
+            sheet:1.0,tack:1.05,full:1.03,arrows:true,shade:true};
+function bindRange(id,key,fmt,after){
+  const el=$(id),v=$(id+'-v');
+  const upd=()=>{ctrl[key]=parseFloat(el.value); v.textContent=fmt(ctrl[key]); if(after)after(ctrl[key]);};
+  el.addEventListener('input',upd); upd();
+}
+bindRange('wspd','speed',v=>v.toFixed(1)+' m/s');
+bindRange('wdir','dir',v=>v.toFixed(0)+'°');
+bindRange('swrate','rate',v=>v.toFixed(0)+'°/s');
+bindRange('sheet','sheet',v=>(v*100).toFixed(0)+'%',v=>setSheet(S,v));
+bindRange('tack','tack',v=>(v*100).toFixed(0)+'%',v=>setTack(S,v));
+bindRange('full','full',v=>'×'+v.toFixed(3),v=>setFullness(S,v));
+$('sweep').addEventListener('change',e=>ctrl.sweep=e.target.checked);
+$('gusts').addEventListener('change',e=>ctrl.gusts=e.target.checked);
+$('arrows').addEventListener('change',e=>ctrl.arrows=e.target.checked);
+$('shade').addEventListener('change',e=>ctrl.shade=e.target.checked);
+$('luff').addEventListener('change',e=>{
+  setLuffPinned(S,e.target.checked);
+  $('att-luff').style.display=e.target.checked?'':'none';
+});
+$('reset').addEventListener('click',()=>{resetSail(S); ema.reset();});
+setSheet(S,ctrl.sheet); setTack(S,ctrl.tack); setFullness(S,ctrl.full);
+
+/* smoothing for readouts (τ ≈ 0.35 s) */
+function EMA3(){ this.v={x:0,y:0,z:0}; }
+EMA3.prototype.push=function(s,a){ this.v.x+=(s.x-this.v.x)*a; this.v.y+=(s.y-this.v.y)*a; this.v.z+=(s.z-this.v.z)*a; };
+const ema={F:new EMA3(),T:new EMA3(),
+  R:{halyard:new EMA3(),tackline:new EMA3(),sheet:new EMA3(),luff:new EMA3()},
+  res:0,
+  reset(){ for(const k of ['F','T']) this[k].v={x:0,y:0,z:0};
+    for(const k in this.R) this.R[k].v={x:0,y:0,z:0}; this.res=0; }};
+
+const fN =v=>Math.abs(v)>=9500? (v/1000).toFixed(2)+' kN' : v.toFixed(0)+' N';
+const fNm=v=>Math.abs(v)>=9500? (v/1000).toFixed(2)+' kN·m' : v.toFixed(0)+' N·m';
+function setNum(id,val,fmt){ const el=$(id); el.textContent=fmt(val);
+  el.className = val>1? 'pos' : (val<-1? 'neg':''); }
+
+/* polar sampling + drawing */
+const samples=new Array(360).fill(null);
+let maxMag=1;
+const pc=$('polar'), pctx=pc.getContext('2d');
+function drawPolar(curDeg){
+  const W=pc.width,H=pc.height,cx=W/2,cy=H/2,Rr=W/2-16;
+  pctx.clearRect(0,0,W,H);
+  pctx.strokeStyle='#1c3247'; pctx.fillStyle='#4a6076';
+  pctx.font='10px monospace'; pctx.textAlign='center';
+  for(const f of [0.25,0.5,0.75,1]){ pctx.beginPath(); pctx.arc(cx,cy,Rr*f,0,7); pctx.stroke(); }
+  for(let a=0;a<360;a+=30){
+    const r=(a-90)*Math.PI/180;
+    pctx.beginPath(); pctx.moveTo(cx,cy); pctx.lineTo(cx+Math.cos(r)*Rr,cy+Math.sin(r)*Rr); pctx.stroke();
+  }
+  pctx.fillText('0° bow',cx,12); pctx.fillText('180°',cx,H-4);
+  pctx.textAlign='left'; pctx.fillText('90° stbd',cx+Rr-30,cy-4);
+  pctx.fillText(fN(maxMag),6,12);
+  const plot=(key,color,absv)=>{
+    pctx.strokeStyle=color; pctx.lineWidth=1.6; pctx.beginPath(); let pen=false;
+    for(let a=0;a<360;a++){ const s=samples[a]; if(!s){pen=false;continue;}
+      let v=s[key]; if(absv)v=Math.abs(v); v=Math.max(0,v);
+      const r=(a-90)*Math.PI/180, rr=Rr*Math.min(1,v/maxMag);
+      const x=cx+Math.cos(r)*rr, y=cy+Math.sin(r)*rr;
+      if(pen)pctx.lineTo(x,y); else pctx.moveTo(x,y); pen=true; }
+    pctx.stroke(); };
+  plot('mag','#5c7f97'); plot('side','#f4b25e',true); plot('drive','#58d68d');
+  // current-direction needle
+  const r=(curDeg-90)*Math.PI/180;
+  pctx.strokeStyle='#4fd8eb'; pctx.lineWidth=1;
+  pctx.beginPath(); pctx.moveTo(cx,cy); pctx.lineTo(cx+Math.cos(r)*Rr,cy+Math.sin(r)*Rr); pctx.stroke();
+}
+$('clear').addEventListener('click',()=>{samples.fill(null); maxMag=1; drawPolar(ctrl.dir);});
+$('csv').addEventListener('click',()=>{
+  let s='wind_from_deg,drive_N,side_N,vert_N,heel_Nm,halyard_N,tackline_N,sheet_N\n';
+  for(let a=0;a<360;a++){ const x=samples[a]; if(!x)continue;
+    s+=`${a},${x.drive.toFixed(1)},${x.side.toFixed(1)},${x.vert.toFixed(1)},${x.heel.toFixed(1)},${x.halyard.toFixed(1)},${x.tackline.toFixed(1)},${x.sheet.toFixed(1)}\n`; }
+  const done=()=>{ $('csv').textContent='Copied ✓'; setTimeout(()=>$('csv').textContent='Copy CSV',1200); };
+  if(navigator.clipboard&&navigator.clipboard.writeText)
+    navigator.clipboard.writeText(s).then(done).catch(()=>{ $('csvtext').value=s; $('csvbox').style.display='block'; });
+  else { $('csvtext').value=s; $('csvbox').style.display='block'; }
+});
+$('csvclose').addEventListener('click',()=>$('csvbox').style.display='none');
+
+/* ============================ LOOP ================================== */
+let acc=0, last=performance.now(), simT=0, lastSampled=-999;
+const FRAME=1/P.FRAME_HZ;
+const attScaleDecay={v:200};
+
+function frame(now){
+  requestAnimationFrame(frame);
+  let dt=(now-last)/1000; last=now;
+  acc+=Math.min(dt,0.1);                      // clamp: no spiral of death
+
+  let stepped=false;
+  while(acc>=FRAME-1e-9){
+    simT+=FRAME;
+    if(ctrl.sweep){ ctrl.dir=(ctrl.dir+ctrl.rate*FRAME)%360;
+      $('wdir').value=ctrl.dir; $('wdir-v').textContent=ctrl.dir.toFixed(0)+'°'; }
+    let spd=ctrl.speed;
+    if(ctrl.gusts) spd*=1+0.14*Math.sin(simT*2*Math.PI/5.5)+0.06*Math.sin(simT*2*Math.PI/1.7+1.3);
+    stepFrame(S, windVector(spd,ctrl.dir));
+    acc-=FRAME; stepped=true;
+  }
+
+  if(stepped){
+    const a=1-Math.exp(-FRAME/0.35), o=S.out;
+    ema.F.push(o.F,a); ema.T.push(o.T,a);
+    for(const k in ema.R) ema.R[k].push(o.R[k],a);
+    ema.res+=(o.residual-ema.res)*a;
+
+    // readouts
+    setNum('f-drive',ema.F.v.z,fN); setNum('f-side',ema.F.v.x,fN); setNum('f-vert',ema.F.v.y,fN);
+    const mag=vlen3(ema.F.v.x,ema.F.v.y,ema.F.v.z);
+    $('f-mag').textContent=fN(mag);
+    setNum('m-heel',ema.T.v.z,fNm); setNum('m-pitch',ema.T.v.x,fNm); setNum('m-yaw',ema.T.v.y,fNm);
+    let attMax=50;
+    for(const k of ['halyard','tackline','sheet','luff'])
+      attMax=Math.max(attMax,vlen3(ema.R[k].v.x,ema.R[k].v.y,ema.R[k].v.z));
+    attScaleDecay.v=Math.max(attMax,attScaleDecay.v*0.995);
+    for(const k of ['halyard','tackline','sheet','luff']){
+      const m=vlen3(ema.R[k].v.x,ema.R[k].v.y,ema.R[k].v.z);
+      const el=$('att-'+k); el.querySelector('.v').textContent=fN(m);
+      el.querySelector('.bar i').style.width=(100*m/attScaleDecay.v).toFixed(1)+'%';
+    }
+    $('residual').textContent='balance residual '+(100*ema.res).toFixed(1)+
+      '%  ·  ΣR vs F_aero+W  ·  area '+S.area.toFixed(1)+' m²';
+
+    // polar sample once per degree, using smoothed values
+    const d=Math.round(ctrl.dir)%360;
+    if(d!==lastSampled){
+      lastSampled=d;
+      samples[d]={mag,drive:ema.F.v.z,side:ema.F.v.x,vert:ema.F.v.y,heel:ema.T.v.z,
+        halyard:vlen3(ema.R.halyard.v.x,ema.R.halyard.v.y,ema.R.halyard.v.z),
+        tackline:vlen3(ema.R.tackline.v.x,ema.R.tackline.v.y,ema.R.tackline.v.z),
+        sheet:vlen3(ema.R.sheet.v.x,ema.R.sheet.v.y,ema.R.sheet.v.z)};
+      maxMag=Math.max(maxMag,mag);
+      drawPolar(ctrl.dir);
+    }
+  }
+
+  /* geometry push */
+  const pa=sailGeo.attributes.position.array;
+  for(let i=0;i<S.cloth;i++){ pa[3*i]=S.pos[3*i]; pa[3*i+1]=S.pos[3*i+1]; pa[3*i+2]=S.pos[3*i+2]; }
+  sailGeo.attributes.position.needsUpdate=true;
+  sailGeo.computeVertexNormals();
+  const ca=sailGeo.attributes.color.array;
+  if(ctrl.shade){
+    let m=1e-4; for(let i=0;i<S.cloth;i++) m=Math.max(m,S.aeroLoad[i]);
+    for(let i=0;i<S.cloth;i++){ const t=Math.min(1,S.aeroLoad[i]/m);
+      // navy -> cyan -> amber -> red
+      ca[3*i]  = t<0.5? 0.15+t*1.2 : 0.75+ (t-0.5)*0.5;
+      ca[3*i+1]= t<0.6? 0.35+t*0.9 : 0.89-(t-0.6)*1.6;
+      ca[3*i+2]= t<0.4? 0.55+t*0.8 : 0.87-(t-0.4)*1.3;
+    }
+  } else for(let i=0;i<S.cloth*3;i++) ca[i]=0.92;
+  sailGeo.attributes.color.needsUpdate=true;
+
+  for(const name of Object.keys(ropeLines)){
+    const rope=S.ropes[name], arr=ropeLines[name].geometry.attributes.position.array;
+    let w=0, first=S.cons[rope.consIdx[0]].a;
+    arr[w++]=S.pos[3*first]; arr[w++]=S.pos[3*first+1]; arr[w++]=S.pos[3*first+2];
+    for(const ci of rope.consIdx){ const b=S.cons[ci].b;
+      arr[w++]=S.pos[3*b]; arr[w++]=S.pos[3*b+1]; arr[w++]=S.pos[3*b+2]; }
+    ropeLines[name].geometry.attributes.position.needsUpdate=true;
+  }
+
+  /* arrows */
+  const wv=windVector(1,ctrl.dir);
+  windArrow.position.set(-wv.x*9, 3.2, -wv.z*9);
+  windArrow.setDirection(new THREE.Vector3(wv.x,0,wv.z));
+  windArrow.setLength(1.6+ctrl.speed*0.14,0.8,0.4);
+  const Fm=vlen3(ema.F.v.x,ema.F.v.y,ema.F.v.z);
+  forceArrow.visible=ctrl.arrows&&Fm>2;
+  if(forceArrow.visible){
+    forceArrow.position.set(S.out.ce.x,S.out.ce.y,S.out.ce.z);
+    forceArrow.setDirection(new THREE.Vector3(ema.F.v.x/Fm,ema.F.v.y/Fm,ema.F.v.z/Fm));
+    forceArrow.setLength(Math.min(7,0.9+2.4*Math.sqrt(Fm/1000)),0.6,0.3);
+  }
+  for(const k of Object.keys(attArrows)){
+    const R=ema.R[k].v, m=vlen3(R.x,R.y,R.z);
+    const on=ctrl.arrows&&m>2&&(k!=='luff'||S.luffPinned);
+    attArrows[k].visible=on;
+    if(on){
+      const p = k==='luff'? {x:0,y:5,z:2.3} : S.ropes[k].anchor;
+      attArrows[k].position.set(p.x,p.y,p.z);
+      attArrows[k].setDirection(new THREE.Vector3(R.x/m,R.y/m,R.z/m));
+      attArrows[k].setLength(Math.min(4.5,0.5+1.8*Math.sqrt(m/1000)),0.4,0.2);
+    }
+  }
+
+  applyCam();
+  renderer.render(scene,camera);
+}
+
+function resize(){
+  const w=innerWidth,h=innerHeight;
+  renderer.setSize(w,h,false);
+  camera.aspect=w/h; camera.updateProjectionMatrix();
+}
+addEventListener('resize',resize);
+resize();
+$('stats').textContent=
+  `${S.n} particles · ${S.cons.length} constraints · ${S.tris.length/3} tris · `+
+  `${P.SUBSTEPS}×${P.ITER} @ ${P.FRAME_HZ} Hz · drag to orbit, wheel to zoom`;
+drawPolar(ctrl.dir);
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

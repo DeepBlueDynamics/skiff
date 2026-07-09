@@ -1,0 +1,36 @@
+[package]
+name = "skiff"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[lib]
+name = "skiff"
+path = "src/lib.rs"
+
+[[bin]]
+name = "skiff"
+path = "src/main.rs"
+
+[[bin]]
+name = "skiff-cli"
+path = "src/cli.rs"
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+axum = "0.7"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+geo = "0.28"
+geojson = "0.24"
+rstar = "0.12"
+rayon = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+toml = "0.8"
+tower-http = { version = "0.6", features = ["cors", "fs"] }

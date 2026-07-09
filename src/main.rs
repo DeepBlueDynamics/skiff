@@ -1,0 +1,589 @@
+use std::net::SocketAddr;
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
+
+use axum::extract::State;
+use axum::http::Method;
+use axum::http::StatusCode;
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use tower_http::cors::{Any, CorsLayer};
+use tower_http::services::ServeDir;
+use tracing_subscriber::EnvFilter;
+
+use skiff::boat::classify_course;
+use skiff::core::{LatLon, Vec2Mps, angle_diff_deg, move_latlon};
+use skiff::env::{
+    ConstantEnvironment, EnvBatchRequest, EnvQueryPoint, EnvironmentProvider, HttpEnvironmentProvider,
+    MetOcean, NutsAuthClient, test_env, wind_over_water,
+};
+use skiff::cat_physics;
+use skiff::signalk::{SignalKClient, SignalKDelta, SignalKUpdate, SignalKSource, SignalKPathValue};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimControlInput {
+    pub helm: f64,       // -1.0 (port) to 1.0 (starboard)
+    pub sail_trim: f64,  // 0.0 to 1.0
+    pub reef: f64,       // 0.0 to 1.0
+    #[serde(default)]
+    pub thrust_port: f64, // -3000N to +3000N
+    #[serde(default)]
+    pub thrust_stbd: f64, // -3000N to +3000N
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetEnvironmentInput {
+    pub wind_speed_mps: f64,
+    pub wind_to_deg: f64,
+    pub current_speed_mps: f64,
+    pub current_to_deg: f64,
+    pub wave_height_m: Option<f64>,
+    pub wave_period_s: Option<f64>,
+    pub wave_to_deg: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetPositionInput {
+    pub lat_deg: f64,
+    pub lon_deg: f64,
+}
+
+fn default_cat_state() -> cat_physics::CatState {
+    let initial_heading_rad = 20.0f64.to_radians();
+    cat_physics::CatState {
+        eta: [0.0, 0.0, 0.0, 0.0, 0.0, initial_heading_rad],
+        nu: [0.0; 6],
+        rudder: 0.0,
+        stability: cat_physics::StabilityState::Upright,
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FullSimState {
+    pub at: DateTime<Utc>,
+    pub elapsed_s: f64,
+    pub pos: LatLon,
+    pub local_pos_m: Vec2Mps,
+    pub heading_true_deg: f64,
+    pub rudder_deg: f64,
+    pub stw_mps: f64,
+    pub sog_mps: f64,
+    pub cog_true_deg: f64,
+    pub leeway_deg: f64,
+    pub heel_deg: f64,
+    pub pitch_deg: f64,
+    pub bob_m: f64,
+    pub twa_deg: f64,
+    pub tws_mps: f64,
+    pub course: String,
+    pub control: SimControlInput,
+    pub env: MetOcean,
+    pub trail: Vec<Vec2Mps>,
+    #[serde(default)]
+    pub stability_state: String, // upright | knockdown | capsized
+    #[serde(default)]
+    pub slam_warning: bool,
+    #[serde(default = "default_cat_state")]
+    pub cat_state: cat_physics::CatState,
+    #[serde(default)]
+    pub manual_env_override: bool,
+}
+
+/// Fresh cloth wrench is used while younger than this; then blended out over
+/// [`SAIL_WRENCH_BLEND_S`] back to the coefficient model (plan §4.2).
+const SAIL_WRENCH_FRESH_S: f64 = 0.5;
+const SAIL_WRENCH_BLEND_S: f64 = 1.0;
+
+#[derive(Debug, Clone)]
+struct StoredSailWrench {
+    f_body: [f64; 3],
+    tau_body: [f64; 3],
+    /// Client sequence number (ordering / debug; not used by physics yet).
+    #[allow(dead_code)]
+    seq: u64,
+    received_at: Instant,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SailWrenchInput {
+    pub seq: u64,
+    pub f_body: [f64; 3],
+    pub tau_body: [f64; 3],
+}
+
+#[derive(Clone)]
+struct AppState {
+    sim_state: Arc<RwLock<FullSimState>>,
+    sail_wrench: Arc<RwLock<Option<StoredSailWrench>>>,
+}
+
+/// Map stored wrench age → optional override for `cat_step`.
+/// - age < 500 ms: pure cloth wrench
+/// - 500 ms … 1.5 s: linear blend cloth → coefficient
+/// - older / missing: pure coefficient (None)
+fn sail_override_from_store(
+    stored: &Option<StoredSailWrench>,
+    now: Instant,
+) -> Option<cat_physics::SailWrenchOverride> {
+    let w = stored.as_ref()?;
+    let age = now.duration_since(w.received_at).as_secs_f64();
+    if age < SAIL_WRENCH_FRESH_S {
+        Some(cat_physics::SailWrenchOverride {
+            f_body: w.f_body,
+            tau_body: w.tau_body,
+            blend: 1.0,
+        })
+    } else if age < SAIL_WRENCH_FRESH_S + SAIL_WRENCH_BLEND_S {
+        let t = (age - SAIL_WRENCH_FRESH_S) / SAIL_WRENCH_BLEND_S;
+        Some(cat_physics::SailWrenchOverride {
+            f_body: w.f_body,
+            tau_body: w.tau_body,
+            blend: 1.0 - t,
+        })
+    } else {
+        None
+    }
+}
+
+fn create_initial_state() -> FullSimState {
+    let mut env = test_env();
+    env.wind_ground_mps = Vec2Mps::from_speed_to_deg(7.2, 150.0); // 14 knots from 150 deg
+    env.current_ground_mps = Vec2Mps::from_speed_to_deg(0.55, 85.0); // ~1 knot from 85 deg
+    env.wave_height_m = Some(0.0);
+    env.wave_period_s = Some(7.0);
+    env.wave_to_deg = Some(290.0);
+
+    let initial_heading_rad = 20.0f64.to_radians();
+    let cat_state = cat_physics::CatState {
+        eta: [0.0, 0.0, 0.0, 0.0, 0.0, initial_heading_rad],
+        nu: [0.0; 6],
+        rudder: 0.0,
+        stability: cat_physics::StabilityState::Upright,
+    };
+
+    FullSimState {
+        at: Utc::now(),
+        elapsed_s: 0.0,
+        pos: LatLon {
+            lat_deg: 26.0,
+            lon_deg: -130.0,
+        },
+        local_pos_m: Vec2Mps::ZERO,
+        heading_true_deg: 20.0,
+        rudder_deg: 0.0,
+        stw_mps: 0.0,
+        sog_mps: 0.0,
+        cog_true_deg: 20.0,
+        leeway_deg: 0.0,
+        heel_deg: 0.0,
+        pitch_deg: 0.0,
+        bob_m: 0.0,
+        twa_deg: 0.0,
+        tws_mps: 0.0,
+        course: "HeadToWind".to_string(),
+        control: SimControlInput {
+            helm: 0.0,
+            sail_trim: 0.76,
+            reef: 0.0,
+            thrust_port: 0.0,
+            thrust_stbd: 0.0,
+        },
+        env,
+        trail: vec![Vec2Mps::ZERO],
+        stability_state: "upright".to_string(),
+        slam_warning: false,
+        cat_state,
+        manual_env_override: false,
+    }
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .init();
+
+    // Read config from environment variables
+    let sk_host = std::env::var("SIGNALK_HOST").ok();
+    let sk_token = std::env::var("SIGNALK_TOKEN").ok();
+    let meridian_url = std::env::var("MERIDIAN_URL").unwrap_or_else(|_| "https://meridian.deepbluedynamics.com".to_string());
+    let meridian_client_id = std::env::var("MERIDIAN_CLIENT_ID").ok();
+    let meridian_client_secret = std::env::var("MERIDIAN_CLIENT_SECRET").ok();
+    let auth_url = std::env::var("NUTS_AUTH_URL").unwrap_or_else(|_| "https://auth.nuts.services/auth".to_string());
+
+    tracing::info!("Starting Sailing Simulator Backend...");
+    tracing::info!("Meridian Service URL: {meridian_url}");
+    if let Some(ref host) = sk_host {
+        tracing::info!("Signal K server configured: {host}");
+    } else {
+        tracing::warn!("SIGNALK_HOST not configured. Delta updates will not be sent.");
+    }
+
+    let shared_state = Arc::new(RwLock::new(create_initial_state()));
+    let shared_sail_wrench: Arc<RwLock<Option<StoredSailWrench>>> = Arc::new(RwLock::new(None));
+
+    // Instantiate environment provider
+    let env_provider: Arc<dyn EnvironmentProvider> = if let (Some(client_id), Some(client_secret)) = (meridian_client_id, meridian_client_secret) {
+        tracing::info!("Authenticating Meridian API via Nuts Auth: {auth_url}");
+        let auth = NutsAuthClient::new(client_id, client_secret, auth_url);
+        Arc::new(HttpEnvironmentProvider::new(meridian_url, Some(auth)))
+    } else {
+        tracing::warn!("Meridian API credentials missing. Falling back to constant environment.");
+        let mut initial_env = test_env();
+        initial_env.wind_ground_mps = Vec2Mps::from_speed_to_deg(7.2, 150.0);
+        initial_env.current_ground_mps = Vec2Mps::from_speed_to_deg(0.55, 85.0);
+        initial_env.wave_height_m = Some(0.0);
+        initial_env.wave_period_s = Some(7.0);
+        initial_env.wave_to_deg = Some(290.0);
+        Arc::new(ConstantEnvironment { sample: initial_env })
+    };
+
+    // Instantiate Signal K Client
+    let sk_client = sk_host.map(|host| SignalKClient::new(host, sk_token));
+
+    // Background Thread: Weather Fetching Loop (Every 30 seconds)
+    let state_for_weather = shared_state.clone();
+    let env_provider_for_weather = env_provider.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            let (current_pos, is_overridden) = {
+                let state = state_for_weather.read().unwrap();
+                (state.pos, state.manual_env_override)
+            };
+            if is_overridden {
+                continue;
+            }
+
+            tracing::info!("Querying Meridian Environment at Lat: {}, Lon: {}", current_pos.lat_deg, current_pos.lon_deg);
+            let req = EnvBatchRequest {
+                points: vec![EnvQueryPoint {
+                    at: Utc::now(),
+                    pos: current_pos,
+                }],
+            };
+
+            match env_provider_for_weather.sample_many(req).await {
+                Ok(mut samples) => {
+                    if let Some(sample) = samples.pop() {
+                        tracing::info!("Successfully fetched environment updates. Wind: {} m/s, Current: {} m/s", sample.wind_ground_mps.magnitude(), sample.current_ground_mps.magnitude());
+                        let mut state = state_for_weather.write().unwrap();
+                        state.env = sample;
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to fetch environment updates from Meridian Service: {e}");
+                }
+            }
+        }
+    });
+
+    // Background Thread: Physics Simulation Loop (20Hz - every 50ms)
+    let state_for_physics = shared_state.clone();
+    let wrench_for_physics = shared_sail_wrench.clone();
+    tokio::spawn(async move {
+        let mut last_tick = tokio::time::Instant::now();
+        loop {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let now = tokio::time::Instant::now();
+            let dt = (now - last_tick).as_secs_f64();
+            last_tick = now;
+
+            let sail_override = {
+                let stored = wrench_for_physics.read().unwrap();
+                sail_override_from_store(&stored, Instant::now())
+            };
+
+            let mut state = state_for_physics.write().unwrap();
+            state.elapsed_s += dt;
+            state.at = Utc::now();
+
+            let params = cat_physics::lagoon_450s();
+            let env_phys = cat_physics::Environment {
+                wind_world: [state.env.wind_ground_mps.north, state.env.wind_ground_mps.east, 0.0],
+                current_world: [state.env.current_ground_mps.north, state.env.current_ground_mps.east, 0.0],
+            };
+            let ctrl_phys = cat_physics::CatControl {
+                rudder_cmd: state.control.helm * params.rudder_max,
+                sail_trim: state.control.sail_trim * 15.0f64.to_radians(),
+                thrust_port: state.control.thrust_port,
+                thrust_stbd: state.control.thrust_stbd,
+            };
+
+            let next_cat_state = cat_physics::cat_step(
+                &state.cat_state,
+                &ctrl_phys,
+                &env_phys,
+                &params,
+                dt,
+                sail_override,
+            );
+            state.cat_state = next_cat_state;
+
+            // Extract telemetry values
+            let eta = state.cat_state.eta;
+            let nu = state.cat_state.nu;
+            let phi = eta[3];
+            let theta = eta[4];
+            let psi = eta[5];
+
+            let r_mat = cat_physics::rotation_body_to_world(phi, theta, psi);
+
+            let nu_lin = [nu[0], nu[1], nu[2]];
+
+            let current_body = cat_physics::rotate_world_to_body(&r_mat, env_phys.current_world);
+            let ground_lin = [
+                nu_lin[0] + current_body[0],
+                nu_lin[1] + current_body[1],
+                nu_lin[2] + current_body[2],
+            ];
+            let ground_world = cat_physics::rotate_body_to_world(&r_mat, ground_lin);
+
+            let stw_sign = if nu[0] >= 0.0 { 1.0 } else { -1.0 };
+            let sog_sign = if ground_lin[0] >= 0.0 { 1.0 } else { -1.0 };
+            state.stw_mps = nu[0].hypot(nu[1]) * stw_sign;
+            state.sog_mps = ground_world[0].hypot(ground_world[1]) * sog_sign;
+            state.cog_true_deg = (-ground_world[1]).atan2(ground_world[0]).to_degrees().rem_euclid(360.0);
+            state.heading_true_deg = (-psi).to_degrees().rem_euclid(360.0);
+            state.rudder_deg = state.cat_state.rudder.to_degrees();
+            state.heel_deg = phi.to_degrees();
+            state.pitch_deg = theta.to_degrees();
+            state.bob_m = -eta[2]; // NED down: bob height is negative of z
+            state.leeway_deg = (-nu[1]).atan2(nu[0].max(1.0e-3)).to_degrees();
+
+            // Apparent wind
+            let wind_body = cat_physics::rotate_world_to_body(&r_mat, env_phys.wind_world);
+            let v_pt_air = [
+                ground_lin[0] - nu[4] * params.mast_ce_height,
+                ground_lin[1] + nu[3] * params.mast_ce_height,
+                ground_lin[2],
+            ];
+            let awv = [
+                wind_body[0] - v_pt_air[0],
+                wind_body[1] - v_pt_air[1],
+            ];
+            let aws = awv[0].hypot(awv[1]);
+            let awa_rad = awv[1].atan2(awv[0]);
+
+            state.tws_mps = aws;
+            state.twa_deg = -awa_rad.to_degrees();
+
+            let over_ground_vec = Vec2Mps { east: -ground_world[1], north: ground_world[0] };
+            state.local_pos_m = state.local_pos_m + over_ground_vec * dt;
+            state.pos = move_latlon(state.pos, over_ground_vec, dt);
+
+            let local_pos = state.local_pos_m;
+            let last_trail = state.trail.last().copied().unwrap_or(Vec2Mps::ZERO);
+            if state.trail.is_empty() || (last_trail - local_pos).magnitude() > 5.0 {
+                state.trail.push(local_pos);
+                if state.trail.len() > 300 {
+                    state.trail.remove(0);
+                }
+            }
+
+            // Wave height at location (needed for bridgedeck slam checking)
+            let wave_to_deg = state.env.wave_to_deg.unwrap_or(290.0);
+            let wave_height_m = state.env.wave_height_m.unwrap_or(0.8);
+            let wave_period_s = state.env.wave_period_s.unwrap_or(7.0);
+
+            let wave_rad = wave_to_deg.to_radians();
+            let along = state.local_pos_m.east * wave_rad.sin() + state.local_pos_m.north * wave_rad.cos();
+            let phase = along * 0.08 - (state.elapsed_s / wave_period_s) * std::f64::consts::PI * 2.0;
+            let wave_height = phase.sin() * wave_height_m * 0.36 + (phase * 1.7 + 0.8).sin() * wave_height_m * 0.09;
+
+            // Bridgedeck slam
+            let underside = -params.bridgedeck_clearance + eta[2];
+            let penetration = wave_height - (-underside);
+            state.slam_warning = penetration > 0.1 && state.stw_mps > 2.0;
+
+            // Course classification
+            let wind_water = wind_over_water(&state.env);
+            let wind_to_deg = wind_water.to_deg();
+            let twa_true_deg = angle_diff_deg(state.heading_true_deg, wind_to_deg);
+            state.course = format!("{:?}", classify_course(twa_true_deg.abs()));
+
+            // Stability state mapping
+            state.stability_state = match state.cat_state.stability {
+                cat_physics::StabilityState::Upright => "upright".to_string(),
+                cat_physics::StabilityState::Knockdown => "knockdown".to_string(),
+                cat_physics::StabilityState::CapsizedTransverse | cat_physics::StabilityState::CapsizedPitchpole => "capsized".to_string(),
+            };
+        }
+    });
+
+    // Background Thread: Signal K Publishing Loop (Every 1 second)
+    if let Some(sk) = sk_client {
+        let state_for_sk = shared_state.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                let data = {
+                    let state = state_for_sk.read().unwrap();
+                    state.clone()
+                };
+
+                let current_bearing_rad = data.env.current_ground_mps.to_deg().to_radians();
+
+                let delta = SignalKDelta {
+                    context: "vessels.self".to_string(),
+                    updates: vec![SignalKUpdate {
+                        source: SignalKSource {
+                            label: "sailing-simulator".to_string(),
+                            source_type: "simulator".to_string(),
+                        },
+                        values: vec![
+                            SignalKPathValue {
+                                path: "navigation.position".to_string(),
+                                value: serde_json::json!({
+                                    "latitude": data.pos.lat_deg,
+                                    "longitude": data.pos.lon_deg,
+                                }),
+                            },
+                            SignalKPathValue {
+                                path: "navigation.headingTrue".to_string(),
+                                value: serde_json::json!(data.heading_true_deg.to_radians()),
+                            },
+                            SignalKPathValue {
+                                path: "navigation.speedThroughWater".to_string(),
+                                value: serde_json::json!(data.stw_mps),
+                            },
+                            SignalKPathValue {
+                                path: "navigation.speedOverGround".to_string(),
+                                value: serde_json::json!(data.sog_mps),
+                            },
+                            SignalKPathValue {
+                                path: "navigation.courseOverGroundTrue".to_string(),
+                                value: serde_json::json!(data.cog_true_deg.to_radians()),
+                            },
+                            SignalKPathValue {
+                                path: "environment.current.drift".to_string(),
+                                value: serde_json::json!(data.env.current_ground_mps.magnitude()),
+                            },
+                            SignalKPathValue {
+                                path: "environment.current.setTrue".to_string(),
+                                value: serde_json::json!(current_bearing_rad),
+                            },
+                            SignalKPathValue {
+                                path: "environment.wind.speedTrue".to_string(),
+                                value: serde_json::json!(data.tws_mps),
+                            },
+                            SignalKPathValue {
+                                path: "environment.wind.directionTrue".to_string(),
+                                value: serde_json::json!(data.twa_deg.to_radians()),
+                            },
+                        ],
+                    }],
+                };
+
+                if let Err(e) = sk.send_delta(&delta).await {
+                    tracing::error!("Failed to stream delta updates to Signal K: {e}");
+                }
+            }
+        });
+    }
+
+    // Server API Router
+    let app_state = AppState {
+        sim_state: shared_state,
+        sail_wrench: shared_sail_wrench,
+    };
+
+    let static_dir = if std::path::Path::new("skiff/web/dist").exists() {
+        "skiff/web/dist"
+    } else {
+        "web/dist"
+    };
+    tracing::info!("Serving static files from: {}", static_dir);
+
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods([Method::GET, Method::POST])
+        .allow_headers(Any);
+
+    let app = Router::new()
+        .route("/healthz", get(|| async { "ok" }))
+        .route("/v1/sim/state", get(get_state))
+        .route("/v1/sim/control", post(post_control))
+        .route("/v1/sim/environment", post(post_environment))
+        .route("/v1/sim/position", post(post_position))
+        .route("/v1/sim/reset", post(post_reset))
+        .route("/v1/sim/sail_wrench", post(post_sail_wrench))
+        .fallback_service(ServeDir::new(static_dir))
+        .layer(cors)
+        .with_state(app_state);
+
+    let port = std::env::var("SKIFF_PORT").ok().and_then(|p| p.parse::<u16>().ok()).unwrap_or(18081);
+    let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port));
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!("sailing-api server listening on {addr}");
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+async fn get_state(State(state): State<AppState>) -> Json<FullSimState> {
+    let current = state.sim_state.read().unwrap();
+    Json(current.clone())
+}
+
+async fn post_control(
+    State(state): State<AppState>,
+    Json(req): Json<SimControlInput>,
+) -> Json<FullSimState> {
+    let mut current = state.sim_state.write().unwrap();
+    current.control = req;
+    Json(current.clone())
+}
+
+async fn post_environment(
+    State(state): State<AppState>,
+    Json(req): Json<SetEnvironmentInput>,
+) -> Json<FullSimState> {
+    let mut current = state.sim_state.write().unwrap();
+    current.env.wind_ground_mps = Vec2Mps::from_speed_to_deg(req.wind_speed_mps, req.wind_to_deg);
+    current.env.current_ground_mps = Vec2Mps::from_speed_to_deg(req.current_speed_mps, req.current_to_deg);
+    current.env.wave_height_m = req.wave_height_m;
+    current.env.wave_period_s = req.wave_period_s;
+    current.env.wave_to_deg = req.wave_to_deg;
+    current.manual_env_override = true;
+    Json(current.clone())
+}
+
+async fn post_position(
+    State(state): State<AppState>,
+    Json(req): Json<SetPositionInput>,
+) -> Json<FullSimState> {
+    let mut current = state.sim_state.write().unwrap();
+    current.pos = skiff::core::LatLon {
+        lat_deg: req.lat_deg,
+        lon_deg: req.lon_deg,
+    };
+    current.local_pos_m = skiff::core::Vec2Mps::ZERO;
+    current.trail = vec![skiff::core::Vec2Mps::ZERO];
+    Json(current.clone())
+}
+
+async fn post_reset(State(state): State<AppState>) -> Json<FullSimState> {
+    {
+        let mut wrench = state.sail_wrench.write().unwrap();
+        *wrench = None;
+    }
+    let mut current = state.sim_state.write().unwrap();
+    *current = create_initial_state();
+    Json(current.clone())
+}
+
+async fn post_sail_wrench(
+    State(state): State<AppState>,
+    Json(req): Json<SailWrenchInput>,
+) -> StatusCode {
+    let mut wrench = state.sail_wrench.write().unwrap();
+    *wrench = Some(StoredSailWrench {
+        f_body: req.f_body,
+        tau_body: req.tau_body,
+        seq: req.seq,
+        received_at: Instant::now(),
+    });
+    StatusCode::NO_CONTENT
+}

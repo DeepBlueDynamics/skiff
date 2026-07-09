@@ -1,0 +1,44 @@
+{
+  "vessel": "lagoon-450s",
+  "loa_m": 13.88,
+  "frame": "blender(-Y fwd,+Z up,+X stbd)",
+  "components": [
+    "hull",
+    "foil.rudder.port",
+    "foil.rudder.stbd",
+    "spar.mast",
+    "sail.main",
+    "sail.jib",
+    "prop.port",
+    "prop.stbd"
+  ],
+  "locators": [
+    "cg",
+    "ce.main",
+    "ce.jib",
+    "cp.skeg.port",
+    "cp.skeg.stbd",
+    "cp.rudder.port",
+    "cp.rudder.stbd",
+    "stock.top.port",
+    "stock.bottom.port",
+    "stock.top.stbd",
+    "stock.bottom.stbd",
+    "prop.port",
+    "prop.stbd",
+    "masthead.wind",
+    "gps.antenna"
+  ],
+  "sail_plans": {
+    "working": [
+      "sail.main",
+      "sail.jib"
+    ]
+  },
+  "articulation": {
+    "foil.rudder.port": "steering.rudderAngle",
+    "foil.rudder.stbd": "steering.rudderAngle",
+    "prop.port": "propulsion.port.revolutions",
+    "prop.stbd": "propulsion.stbd.revolutions"
+  }
+}
