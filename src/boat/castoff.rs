@@ -48,6 +48,8 @@ impl BoatProfile for CastOffProfile {
         // TWA is relative angle between bow heading and wind moving toward. This preserves the
         // old Cast-Off spirit: wind course buckets are based on wind vector versus pointing vector.
         let twa_deg = angle_diff_deg(input.heading_true_deg, wind_to_deg);
+        // Design: port/starboard symmetry via abs(TWA) is intentional for now
+        // (see plan §4.7). Course buckets ignore tack side.
         let twa_abs = twa_deg.abs();
         let course = classify_course(twa_abs);
 
@@ -60,6 +62,8 @@ impl BoatProfile for CastOffProfile {
 
         let trim_factor = input.sail_trim.clamp(0.0, 1.0);
         let reef_factor = 1.0 - input.reef.clamp(0.0, 1.0);
+        // Design: wave_speed_factor slows STW (physics); same factor feeds comfort
+        // cost in the router. Double-influence intentional — plan §4.7.
         let wave_factor = wave_speed_factor(
             input.heading_true_deg,
             input.wave_to_deg,

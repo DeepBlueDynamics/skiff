@@ -16,6 +16,10 @@ path = "src/main.rs"
 name = "skiff-cli"
 path = "src/cli.rs"
 
+[[bin]]
+name = "polar_sweep"
+path = "src/bin/polar_sweep.rs"
+
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"

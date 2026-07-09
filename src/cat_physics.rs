@@ -331,6 +331,26 @@ fn damping_nu(nu: &[f64; 6], p: &CatParams) -> [f64; 6] {
 /// Air density (kg/m³) — aerodynamic pressure is `0.5 * RHO_AIR * v² * C`.
 pub const RHO_AIR: f64 = 1.225;
 
+/// Sheet/boom angle at full trim (`sail_trim = 1`): hard-sheeted, near centerline.
+pub const SAIL_SHEET_HARD_DEG: f64 = 6.0;
+/// Sheet/boom angle at zero trim (`sail_trim = 0`): fully eased.
+pub const SAIL_SHEET_EASED_DEG: f64 = 85.0;
+
+/// Map UI/control `sail_trim` ∈ [0, 1] to max sheet/boom angle (radians).
+///
+/// - `trim = 1` → hard sheeted at [`SAIL_SHEET_HARD_DEG`] (~6°)
+/// - `trim = 0` → fully eased at [`SAIL_SHEET_EASED_DEG`] (~85°)
+/// - linear in between
+///
+/// `CatControl.sail_trim` is this angle (rad). The coefficient sail then applies a
+/// weathervane clamp so |boom| ≤ |AWA| (sail cannot be sheeted "above" the wind).
+pub fn sail_trim_to_sheet_rad(sail_trim_01: f64) -> f64 {
+    let t = sail_trim_01.clamp(0.0, 1.0);
+    let deg =
+        SAIL_SHEET_EASED_DEG + t * (SAIL_SHEET_HARD_DEG - SAIL_SHEET_EASED_DEG);
+    deg.to_radians()
+}
+
 // Hull/rig windage: flat-plate drag per body axis on projected areas (m²).
 // Rough Lagoon 450S-class numbers (documented for tuning, not survey data):
 //   A_x ≈ frontal hull ends + cabin face
@@ -358,17 +378,17 @@ fn coefficient_sail_wrench(
         return [0.0; 6];
     }
 
-    // CE height above CG (body +Z is down; sail.r[2] is negative).
-    let h = -p.sail.r[2];
-    // Ground-relative velocity at CE: ground_lin + ω × r_ce with r_ce ≈ [0,0,-h].
+    // Ground-relative velocity at CE: ground_lin + ω × r_ce (full cross, incl. aft CE).
+    let r = p.sail.r;
     let v_ce = [
-        ground_lin[0] - omega[1] * h,
-        ground_lin[1] + omega[0] * h,
+        ground_lin[0] + omega[1] * r[2] - omega[2] * r[1],
+        ground_lin[1] + omega[2] * r[0] - omega[0] * r[2],
     ];
     let inflow = [wind_body[0] - v_ce[0], wind_body[1] - v_ce[1]];
 
-    // Sheet/boom: sail_trim is max sheet angle (rad). Sign toward leeward
-    // (same sign as AWA lateral component). Weathervane when |AWA| ≤ trim.
+    // Sheet/boom: `ctrl.sail_trim` is max sheet angle (rad) from
+    // [`sail_trim_to_sheet_rad`]. Sign toward leeward (same sign as AWA).
+    // Weathervane clamp: |boom| cannot exceed |AWA| (cannot sheet above the wind).
     let awa = inflow[1].atan2(inflow[0]);
     let trim = ctrl.sail_trim.abs();
     let boom = if awa.abs() <= trim {
@@ -742,7 +762,9 @@ pub fn lagoon_450s() -> CatParams {
         aspect_ratio: 5.0,
         cd0: 0.08,
         stall_deg: 22.0,
-        r: [0.0, 0.0, -8.0],
+        // Provisional CE: ~0.5 m aft of CG (r_x < 0) for weather-helm lever arm;
+        // 8 m above CG (body +Z down). Fore-aft to be refined from Blender `ce.*`.
+        r: [-0.5, 0.0, -8.0],
         oswald: 0.85,
         is_sail: true,
     };
@@ -880,5 +902,37 @@ mod tests {
         // Heel moment (body X) must be nonzero for a side force above CG.
         assert!(expected[3].abs() > 1.0);
         assert!((expected[3] - h_above_cg * f[1]).abs() < 1e-12);
+    }
+
+    #[test]
+    fn sail_trim_sheet_map_endpoints() {
+        let hard = sail_trim_to_sheet_rad(1.0).to_degrees();
+        let eased = sail_trim_to_sheet_rad(0.0).to_degrees();
+        assert!((hard - SAIL_SHEET_HARD_DEG).abs() < 1e-12);
+        assert!((eased - SAIL_SHEET_EASED_DEG).abs() < 1e-12);
+        assert!(sail_trim_to_sheet_rad(0.5).to_degrees() > hard);
+        assert!(sail_trim_to_sheet_rad(0.5).to_degrees() < eased);
+    }
+
+    /// Provisional aft CE (`r_x < 0`) produces a yaw moment from lateral sail force
+    /// (weather-helm lever); height still dominates heel.
+    #[test]
+    fn coefficient_sail_aft_ce_produces_yaw_from_side_force() {
+        let p = lagoon_450s();
+        assert!(
+            p.sail.r[0] < 0.0,
+            "expected provisional aft CE, got r_x={}",
+            p.sail.r[0]
+        );
+        let f_side = [0.0, 1000.0, 0.0];
+        let wrench = apply_at(f_side, p.sail.r);
+        // Mz = r_x * Fy − r_y * Fx = (−0.5)*1000 < 0
+        assert!(
+            (wrench[5] - p.sail.r[0] * f_side[1]).abs() < 1e-12,
+            "yaw moment from side force at CE"
+        );
+        assert!(wrench[5].abs() > 1.0);
+        // Heel from height: Mx = −r_z * Fy = 8 * 1000
+        assert!((wrench[3] - (-p.sail.r[2]) * f_side[1]).abs() < 1e-12);
     }
 }

@@ -75,7 +75,9 @@ async function fetchRealTimeData(lat: number, lon: number) {
       const weatherData = await weatherRes.json();
       if (weatherData.current) {
         windSpeedMps = weatherData.current.wind_speed_10m ?? 5.0;
-        windToDeg = weatherData.current.wind_direction_10m ?? 150.0;
+        const windFromDeg = weatherData.current.wind_direction_10m ?? 150.0;
+        // Open-Meteo reports meteorological FROM-direction. Convert to TO-convention.
+        windToDeg = (windFromDeg + 180) % 360;
       }
     }
 
@@ -295,8 +297,8 @@ function SimulationLoop({ controlsRef }: { controlsRef: React.RefObject<any> }) 
           stwMps: data.stw_mps,
           sogMps: data.sog_mps,
           velocityWater: {
-            x: data.stw_mps * Math.sin(data.heading_true_deg * Math.PI / 180),
-            y: data.stw_mps * Math.cos(data.heading_true_deg * Math.PI / 180)
+            x: data.stw_mps * Math.sin((data.heading_true_deg + (data.leeway_deg || 0)) * Math.PI / 180),
+            y: data.stw_mps * Math.cos((data.heading_true_deg + (data.leeway_deg || 0)) * Math.PI / 180)
           },
           velocityGround: {
             x: data.sog_mps * Math.sin(data.cog_true_deg * Math.PI / 180),

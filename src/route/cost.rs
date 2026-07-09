@@ -40,6 +40,9 @@ pub fn score_node(
     } else {
         1.0 / out.sog_mps
     };
+    // Design: wave factor already reduced STW (and thus sog / speed_cost) in the
+    // boat profile. Re-using (1 − wave_penalty) as comfort is intentional double
+    // influence — physics vs preference — see plan §4.7.
     let comfort_cost = (1.0 - out.wave_penalty).max(0.0) * req.comfort_weight;
     let safety_cost = out.safety_penalty * req.safety_weight;
     let current = current_route_cost(met.current_ground_mps, pos, destination);

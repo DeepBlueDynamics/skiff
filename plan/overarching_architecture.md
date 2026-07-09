@@ -53,7 +53,7 @@ Backend quirks (self-consistent, keep, do not "fix" silently): `heading_true_deg
 ### 2.2 Wind
 
 - Vectors named `*_to_*` point **toward** where the flow goes (`Vec2Mps::from_speed_to_deg`). Meteorological sources (Open-Meteo `wind_direction_10m`) report **from**-direction: convert at ingestion (`from = to ± 180°`), and name ingestion fields `wind_from_deg`.
-- **Apparent vs true is a type distinction, not a comment.** Fields carrying apparent wind are named `aws_mps` / `awa_deg`; true wind `tws_mps` / `twa_deg`. SignalK: apparent → `environment.wind.speedApparent` / `angleApparent` (boat-relative rad); true → `speedTrue` + `directionTrue` (true-north FROM direction, rad). Today's code stores apparent wind in `tws_mps`/`twa_deg` (`main.rs` ~304) — that is defect D3 below.
+- **Apparent vs true is a type distinction, not a comment.** Fields carrying apparent wind are named `aws_mps` / `awa_deg`; true wind `tws_mps` / `twa_deg`. SignalK: apparent → `environment.wind.speedApparent` / `angleApparent` (boat-relative rad); true → `speedTrue` + `directionTrue` (true-north FROM direction, rad). **D3 fixed:** `FullSimState` carries both pairs; true uses wind-over-water; SignalK publishes all four paths.
 - Sails consume **apparent** wind (including ω×r at the attachment height). Hydro foils consume **through-water** velocity (−ν). Air foils consume wind minus **ground** velocity.
 
 ### 2.3 Units & constants
@@ -75,7 +75,7 @@ SI internally (m, s, kg, N, rad); knots/degrees only at UI/serialization edges (
 |---|---|---|---|
 | **D1** | Rotation matrix element (2,3) typo: `spsi*sth*cphi − cphi*sphi` should be `spsi*sth*cphi − cpsi*sphi`. Masked while heel≈0; corrupts every body↔world transform once sails heel the boat | `cat_physics.rs` `rotation_body_to_world` row 2 | Correct term + unit tests: `R·Rᵀ=I` and vector round-trip at φ=20°, θ=5°, ψ=137° |
 | **D2** | Open-Meteo `wind_direction_10m` (FROM) assigned to a TO-convention field → real-weather wind reversed 180° | frontend `fetchRealTimeData` (SimulatorScene) | Convert at ingestion per §2.2 |
-| **D3** | Apparent wind stored/published as true wind (`tws_mps`/`twa_deg`, SignalK `directionTrue` gets a boat-relative apparent angle) | `main.rs` telemetry + SignalK publisher | Rename fields, publish both apparent and true correctly; HUD updated |
+| **D3** | ~~Apparent wind stored/published as true wind~~ **FIXED** | `main.rs` telemetry + SignalK | `aws_mps`/`awa_deg` + true `tws_mps`/`twa_deg`; SignalK apparent + true paths |
 | **D4** | Cloth per-particle force clamp `MASS*40` saturates above ~5 kt apparent — sail shape and any extracted force stop scaling with wind | `SpinnakerSail.tsx` | Remove force clamp; stabilize with substeps/iterations if needed, never load clamping. Keep `MAX_VEL` as explosion guard |
 | **D5** | Cloth timestep hardcoded to 60 Hz display (`H=(1/60)/8` inside `useFrame`) → 2.4× fast on 144 Hz monitors | `SpinnakerSail.tsx` | Fixed-step accumulator driven by `useFrame` delta, clamped |
 | **D6** | Sail gravity applied in boat-local −Y; tilts with heel/pitch | `SpinnakerSail.tsx` | Rotate world-down into boat frame using received `heelDeg`/`pitchDeg` |
@@ -110,6 +110,8 @@ Notes:
 - `foil_force_2d` is symmetric-foil; acceptable for v1. A cambered, one-sided variant (nonzero CL at α=0, luffing collapse on the wrong side) is a follow-up (WP-B2).
 - Add hull/rig **windage**: flat-plate drag per axis on projected areas — makes bare-poles drift and capsized states behave.
 - Depowering: `ctrl.reef` scales area (exists); add `flat` (CL multiplier) alongside when tuning.
+- **CE location (provisional):** `p.sail.r = [-0.5, 0, -8]` m body (0.5 m **aft** of CG, 8 m above). The aft offset gives a weather-helm lever (`Mz = r_x F_y`); refine from Blender `ce.*` empties when sails-as-data lands.
+- **Sheet map:** `control.sail_trim` 0..1 → boom max angle **85° → 6°** via `sail_trim_to_sheet_rad` (trim=1 hard-sheeted ~6°, trim=0 fully eased ~85°). Weathervane clamp keeps `|boom| ≤ |AWA|`.
 
 ### 4.2 Cloth wrench channel (refinement path)
 
@@ -136,7 +138,7 @@ Current pattern is correct and stays: load the sail's **Blender-exported mesh as
 
 ### 4.4 Trim unification
 
-One trim value drives both models. `control.sail_trim` (0–1) is the single source: backend maps it to sheet angle (currently 0–15°, placeholder — real sheet geometry later); frontend maps the same value to the visual trim it needs (when a sheet constraint returns, its rest length; until then, nothing diverging). UI sliders that shadow trim with unrelated values are defects.
+One trim value drives both models. `control.sail_trim` (0–1) is the single source: backend maps it via `sail_trim_to_sheet_rad` to sheet angle **~85° (eased) … ~6° (hard)** (was 0–15° — too narrow; stalled reverse thrust). Frontend maps the same 0–1 value to the visual trim it needs (when a sheet constraint returns, its rest length; until then, nothing diverging). UI sliders that shadow trim with unrelated values are defects.
 
 ### 4.5 Sails as data (multi-sail end state)
 
@@ -148,6 +150,17 @@ One trim value drives both models. `control.sail_trim` (0–1) is the single sou
 ### 4.6 Transport
 
 Two serialized HTTP round-trips per rendered frame is acceptable on localhost for now. Next step when forces flow: fold control+state into one POST; eventual: WebSocket. Not a current WP.
+
+### 4.7 Routing notes
+
+Explicit design decisions for the isochrone / polar stack (code comments at the sites match):
+
+- **Unimplemented land/depth constraints:** `IsochroneRequest.avoid_land` and `min_depth_m` are accepted on the request type but not implemented. The router **returns an error** if either is set, rather than silently ignoring them (safety).
+- **Polar port/starboard symmetry:** boat speed from polars / cast-off course buckets uses `abs(TWA)` for now — intentional; asymmetric tables and tack-aware polars are future work.
+- **Wave penalty double-influence:** `wave_speed_factor` reduces STW in the boat profile (physics) **and** `(1 − wave_penalty)` feeds comfort cost in the isochrone scorer (preference). Both paths are intentional; do not “dedupe” without revisiting routing weights.
+- **Light-air polar extrapolation:** TWS below the first polar table row scales STW linearly toward 0 at 0 kt (does not clamp to the first row).
+- **Calm-sea wave gate:** wave height ≈ 0 skips the entire wave penalty (including short-period), so flat water never invents a sea-state slowdown.
+- **Heading fan:** always includes the direct destination bearing, independent of `heading_resolution_deg`.
 
 ---
 

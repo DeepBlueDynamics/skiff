@@ -9,7 +9,7 @@ use crate::env::{EnvBatchRequest, EnvQueryPoint, EnvironmentProvider, wind_over_
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, json};
 
-use crate::route::constraints::route_constraints_ok;
+use crate::route::constraints::{route_constraints_ok, validate_route_constraint_flags};
 use crate::route::cost::score_node;
 use crate::route::prune::prune_frontier;
 
@@ -250,13 +250,22 @@ where
     Ok(make_profile(req, rings, all_nodes, destination_hit))
 }
 
+/// Candidate true headings for one frontier expansion.
+///
+/// Always includes the direct destination bearing, even when
+/// `resolution_deg` would skip it (e.g. coarse fans that never land on 0° offset).
 pub fn heading_fan(pos: LatLon, destination: LatLon, resolution_deg: f64) -> Vec<f64> {
-    let center = bearing_deg(pos, destination);
+    let center = normalize_360(bearing_deg(pos, destination));
     let resolution = resolution_deg.max(1.0);
-    let mut headings = Vec::new();
-    let mut offset = -180.0;
+    // Always seed with the direct dest bearing so the router can aim at the goal
+    // regardless of heading_resolution_deg quantisation.
+    let mut headings = vec![center];
+    let mut offset: f64 = -180.0;
     while offset < 180.0 {
-        headings.push(normalize_360(center + offset));
+        // Skip the sample that reproduces `center` (offset ≈ 0) to avoid a near-duplicate.
+        if offset.abs() >= 1e-9 {
+            headings.push(normalize_360(center + offset));
+        }
         offset += resolution;
     }
     headings
@@ -272,7 +281,45 @@ fn validate_request(req: &IsochroneRequest) -> Result<()> {
     if req.max_frontier_points == 0 {
         return Err(anyhow!("max_frontier_points must be positive"));
     }
+    // avoid_land / min_depth_m: refuse if set (unimplemented) — safety, not silent ignore.
+    validate_route_constraint_flags(req)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::LatLon;
+
+    #[test]
+    fn heading_fan_always_includes_destination_bearing() {
+        let pos = LatLon {
+            lat_deg: 0.0,
+            lon_deg: 0.0,
+        };
+        let dest = LatLon {
+            lat_deg: 0.0,
+            lon_deg: 1.0,
+        };
+        let direct = normalize_360(bearing_deg(pos, dest));
+        // Coarse resolution that does not land on offset 0 from a non-multiple start
+        // still must include the exact destination bearing.
+        let fan = heading_fan(pos, dest, 47.0);
+        assert!(
+            fan.iter().any(|h| (*h - direct).abs() < 1e-9 || (*h - direct).abs() > 360.0 - 1e-9),
+            "fan missing direct bearing {direct}: {fan:?}"
+        );
+        // Also with a resolution that would skip zero offset if we only stepped.
+        let fan_odd = heading_fan(pos, dest, 37.0);
+        assert!(
+            fan_odd
+                .iter()
+                .any(|h| (*h - direct).abs() < 1e-9 || (*h - direct).abs() > 360.0 - 1e-9),
+            "fan_odd missing direct bearing {direct}: {fan_odd:?}"
+        );
+        // First element is the direct bearing (stable contract for tests/callers).
+        assert!((fan[0] - direct).abs() < 1e-9);
+    }
 }
 
 fn find_destination_hit(nodes: &[ReachNode], destination: LatLon) -> Option<ReachNode> {

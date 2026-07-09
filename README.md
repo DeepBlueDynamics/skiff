@@ -29,8 +29,8 @@ Server-authoritative physics in Rust; a React Three Fiber browser client for vis
 12. [Sails: coefficient vs cloth](#sails-coefficient-vs-cloth)
 13. [Validation & monitoring](#validation--monitoring)
 14. [Planning docs (`plan/`)](#planning-docs-plan)
-15. [Known defects (D1–D8)](#known-defects-d1d8)
-16. [Work packages](#work-packages)
+15. [Known gaps](#known-gaps)
+16. [Implementation status](#implementation-status)
 17. [License](#license)
 
 ---
@@ -381,7 +381,7 @@ PBD has no Lagrange multipliers to read. Sum triangle aero forces instead:
 
 ```text
 f_tri  = n̂ · (n̂ · f_wind) · A_tri          # total force, not /3 per vertex for the wrench
-τ_tri  = (centroid − r_ref) × f_tri
+τ_tri  = (centroid − r_ref) × f_tri       # current r_ref is the glTF hull origin
 f_aero = Σ f_tri
 τ_aero = Σ τ_tri
 ```
@@ -394,9 +394,17 @@ Low-pass (substep average + few-Hz filter), map through the frame transform, the
 
 `POST /v1/sim/sail_wrench` — server uses wrench while fresher than ~500 ms, else blends back to coefficients over ~1 s.
 
-### Coefficient sail (backend skeleton)
+The frontend sends torque about the **glTF hull origin** `(0,0,0)`. The backend shifts that wrench to the body CG before blending it with the coefficient sail:
 
-Pieces exist in `cat_physics` / `main` telemetry; target integration sketch:
+```text
+τ_cg = τ_gltf + GLTF_ORIGIN_IN_BODY × f_body
+```
+
+`GLTF_ORIGIN_IN_BODY` currently lives in `src/cat_physics.rs` and is tied by test to the Lagoon 450S CG height. The frontend does not need CG knowledge.
+
+### Coefficient sail (backend)
+
+The backend coefficient sail is implemented in `cat_forces` as the headless baseline. It computes apparent wind at the sail CE, maps `control.sail_trim` to a placeholder sheet angle, applies `foil_force_2d`, and feeds both the force vector and moment-based stability checks:
 
 ```rust
 // apparent wind at CE (ground-relative air velocity)
@@ -409,7 +417,7 @@ let f_tau = apply_at(f, p.sail.r);
 // also feeds m_heel / m_pitch for moment-based stability
 ```
 
-Also planned: hull/rig **windage** (flat-plate drag), reef as area scale, optional `flat` CL multiplier.
+Hull/rig **windage** is also implemented as flat-plate drag per body axis. Remaining sail-model refinements include reef-as-area scaling and an optional `flat` CL multiplier.
 
 ### Trim unification
 
@@ -422,12 +430,12 @@ One value: `control.sail_trim` (0–1) drives **both** backend sheet angle (plac
 - One cloth instance per active sail; **name lookup**, not highest/nearest/farthest heuristics.
 - Backend `CatParams.sails: Vec<Foil>` for helm balance (per-sail yaw moments).
 
-### Cloth solver notes (from system review)
+### Cloth solver notes
 
 - Jakobsen-style Verlet + projection; Blender mesh as rest shape (weld seams → particles, edges → springs).
-- Force clamp `MASS*40` saturates ~5 kt apparent — **must go** (stabilize with substeps/ITER, not load clamps). Keep `MAX_VEL` as explosion guard only.
-- Timestep must use `useFrame` **delta** + fixed-step accumulator (not hardcoded 60 Hz) so 144 Hz monitors don’t run 2.4× fast.
-- Gravity must be world-down rotated by heel/pitch, not boat-local −Y.
+- The old per-particle force clamp is removed; `MAX_VEL` remains as an explosion guard.
+- Physics uses `useFrame` **delta** + a clamped fixed-step accumulator so sim speed is display-rate independent.
+- Gravity is world-down rotated into the heeled/pitched boat frame before applying to particles.
 - Per-line tension readouts need XPBD later; spring elongation in PBD is iteration-dependent.
 
 ---
@@ -495,44 +503,38 @@ Two HTTP round-trips per frame (control POST + state GET) are acceptable on loca
 
 ---
 
-## Known defects (D1–D8)
+## Known gaps
 
-Tracked in [`plan/overarching_architecture.md`](plan/overarching_architecture.md) §3. Fix these before/while building on top.
+The planning docs keep the historical D1–D8 list and work-package breakdown. Current user-facing gaps in this tree:
 
-| ID | Defect | Where | Fix |
+| ID | Gap | Where | Fix |
 |---|---|---|---|
-| **D1** | Rotation matrix element (2,3) typo: uses `cphi*sphi` instead of `cpsi*sphi`. Masked at heel≈0; corrupts body↔world transforms once sails produce heel | `cat_physics.rs` `rotation_body_to_world` row 2 | Correct term + tests `R·Rᵀ=I` and round-trip at φ=20°, θ=5°, ψ=137° |
 | **D2** | Open-Meteo `wind_direction_10m` (FROM) assigned into TO-convention field → real-weather wind 180° reversed | frontend `fetchRealTimeData` (`SimulatorScene`) | Convert at ingestion per wind conventions |
 | **D3** | Apparent wind stored/published as true (`tws_mps`/`twa_deg`); Signal K `directionTrue` gets boat-relative apparent angle | `main.rs` telemetry + `signalk.rs` + HUD | Rename fields; publish AWA/AWS and TWA/TWS correctly |
-| **D4** | Cloth per-particle force clamp `MASS*40` saturates above ~5 kt apparent — shape and extracted force stop scaling with wind | `SpinnakerSail.tsx` | Remove force clamp; more substeps/iterations if needed; keep `MAX_VEL` only |
-| **D5** | Cloth timestep hardcoded to 60 Hz display (`H=(1/60)/8` in `useFrame`) → 2.4× fast on 144 Hz monitors | `SpinnakerSail.tsx` | Fixed-step accumulator from `useFrame` delta, clamped |
-| **D6** | Sail gravity along boat-local −Y; tilts with heel/pitch | `SpinnakerSail.tsx` | Rotate world-down into boat frame using `heelDeg`/`pitchDeg` |
 | **D7** | `web/src/sim/boatPhysics.ts` `stepBoat` is dead code inviting divergent client physics | frontend | Delete `stepBoat` (keep `createInitialBoatState` if still referenced) |
 | **D8** | `velocityWater` reconstructed without `leeway_deg` → vectors overlay draws leeway-free track | `SimulatorScene` | Include leeway in reconstruction |
+| **Cloth settings cleanup** | Tack/clew UI sliders are gone, but old `spinnakerTackSlack` / `spinnakerClewSlack` fields still remain in store/types | `web/src/sim/store.ts`, `web/src/sim/types.ts` | Remove stale settings once no downstream consumers remain |
 
 **Smaller / fix-on-contact** (from review + architecture):
 
-- `ROPE_SLACK` becomes dead after ropes removed / first frame overwrite by sliders
 - Spatial-hash weld can miss epsilon pairs across cell boundaries — probe neighbors
 - Capsized states are **terminal** by design in `update_stability` — document, don’t “fix” without a righting model
 - `DRAG=0.994` per substep is heavy (~5.6% velocity retained per second at 480 substeps/s) — revisit when flogging dynamics matter
 
 ---
 
-## Work packages
+## Implementation status
 
-Priority: **A1 → A2 → A3 → B1 → B2**, then C1 / D / E. A1+A2 transform the system into a boat that actually sails; everything after refines it.
+The detailed work-package queue lives in [`plan/overarching_architecture.md`](plan/overarching_architecture.md). Current high-level status:
 
-| WP | Scope | Primary files | Depends | Done when |
-|---|---|---|---|---|
-| **A1** | Fix D1 rotation matrix + frame unit tests (R·Rᵀ=I, round-trip, §2.1 surge scaffold) | `cat_physics.rs` | — | `cargo test` green with new tests |
-| **A2** | Coefficient sail in `cat_forces` + windage + stability moments live | `cat_physics.rs`, `main.rs` | A1 | Headless: `/v1/sim/state` nonzero `stw`; heel responds to trim/reef; `monitor_sim.py` can show knockdown when overpowered |
-| **A3** | Wind conventions + naming: D2, D3 (fields, Signal K, HUD) | `main.rs`, `signalk.rs`, SimulatorScene, Hud | — | AWA/AWS vs TWA/TWS end-to-end; Signal K paths correct |
-| **B1** | Cloth: attachment §2.4, D4 clamp removal, D5 fixed timestep, D6 gravity, slider cleanup | `SpinnakerSail.tsx`, store/types, ControlsPanel | — | Sail stable 0–30 kt; no ropes rendered; shape scales with wind; same behavior at 60/144 Hz |
-| **B2** | Wrench extraction + filter + frame map + `POST /v1/sim/sail_wrench`; backend staleness decay; explicit `0.5ρv²` | `SpinnakerSail.tsx`, `main.rs` | A2, B1 | Browser open → cloth drives boat; browser closed → decays to coefficient within ~1 s; surge unit test passes |
-| **C1** | Polar validation harness: sweep TWA/TWS to steady state headlessly vs `PolarProfile` | new `src/bin/` or tests | A2 | Polar plot/table diff; gross deviations flagged |
-| **D** | Cleanups: D7, D8, neighbor-cell weld, terminal-capsize comments | frontend | — | `tsc` green; vectors overlay shows leeway |
-| **E** | Sails-as-data: Blender named empties, per-sail config, name-based corners, `Vec<Foil>` backend | Blender + both sides | A2, B1 | Second sail (main) instantiable from config without code changes |
+| Area | Status | Notes |
+|---|---|---|
+| Coordinate-frame foundation | Implemented | Rotation orthonormality, round-trip, and `+z_gltf → +surge` tests exist in `cat_physics.rs` |
+| Backend sail and windage | Implemented | Coefficient sail, hull/rig windage, stability moments, and cloth-wrench blending are wired into `cat_forces` |
+| Frontend cloth attachments and solver fixes | Mostly implemented | Head/tack pinning, free clew, no rendered ropes, force clamp removal, fixed timestep, gravity rotation, and wrench POST are present; stale tack/clew setting fields remain |
+| Wind conventions / telemetry naming | Open | D2/D3 remain: Open-Meteo FROM conversion and apparent-vs-true telemetry naming still need cleanup |
+| Validation harness | Open | Polar sweep/report against `PolarProfile` is still future work |
+| Sails as data | Open | Name-based sail corners, per-sail config, and backend `Vec<Foil>` remain future work |
 
 Implementation sequence for the cloth/wrench track is expanded in [`plan/fixingthesim_implementation.md`](plan/fixingthesim_implementation.md) §§1–5 (attachments → wrench sum → frame map → endpoint → physics integration).
 

@@ -10,6 +10,14 @@ export function ControlsPanel() {
   const resetBoat = useSimulator((state) => state.resetBoat);
   const setBoat = useSimulator((state) => state.setBoat);
   const setInput = useSimulator((state) => state.setInput);
+  const sailForces = useSimulator((state) => state.sailForces);
+
+  const formatN = (v: number) => {
+    return Math.abs(v) >= 9500 ? `${(v / 1000).toFixed(2)} kN` : `${v.toFixed(0)} N`;
+  };
+  const formatNm = (v: number) => {
+    return Math.abs(v) >= 9500 ? `${(v / 1000).toFixed(2)} kN·m` : `${v.toFixed(0)} N·m`;
+  };
 
   const [latInput, setLatInput] = useState(settings.gpsLat.toString());
   const [lonInput, setLonInput] = useState(settings.gpsLon.toString());
@@ -271,15 +279,6 @@ export function ControlsPanel() {
           Drop Mainsail
         </label>
         <hr style={{ border: '0', borderTop: '1px solid rgba(255,255,255,0.08)', margin: '10px 0' }} />
-        <Slider
-          label="Edge Tension"
-          value={settings.spinnakerEdgeTension}
-          min={0.5}
-          max={1.5}
-          step={0.01}
-          unit=""
-          onChange={(v) => setSetting('spinnakerEdgeTension', v)}
-        />
         <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', marginTop: '6px', color: 'var(--ink)' }}>
           <input
             type="checkbox"
@@ -288,6 +287,100 @@ export function ControlsPanel() {
           />
           Show Rig Points
         </label>
+      </ControlGroup>
+
+      <ControlGroup icon={<Sailboat size={16} />} title="Sail Rig">
+        <Slider
+          label="Sheet"
+          value={settings.spinnakerClewSlack}
+          min={0.55}
+          max={1.8}
+          step={0.01}
+          unit=""
+          onChange={(v) => setSetting('spinnakerClewSlack', v)}
+        />
+        <Slider
+          label="Tack line"
+          value={settings.spinnakerTackSlack}
+          min={0.9}
+          max={1.6}
+          step={0.01}
+          unit=""
+          onChange={(v) => setSetting('spinnakerTackSlack', v)}
+        />
+        <Slider
+          label="Fullness"
+          value={settings.sailFullness}
+          min={0.97}
+          max={1.12}
+          step={0.005}
+          unit=""
+          onChange={(v) => setSetting('sailFullness', v)}
+        />
+        
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', marginTop: '8px' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: 'var(--ink)' }}>
+            <input
+              type="checkbox"
+              checked={settings.luffPinned}
+              onChange={(e) => setSetting('luffPinned', e.target.checked)}
+            />
+            Luff pin
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: 'var(--ink)' }}>
+            <input
+              type="checkbox"
+              checked={settings.showForceArrows}
+              onChange={(e) => setSetting('showForceArrows', e.target.checked)}
+            />
+            Force arrows
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: 'var(--ink)' }}>
+            <input
+              type="checkbox"
+              checked={settings.pressureShading}
+              onChange={(e) => setSetting('pressureShading', e.target.checked)}
+            />
+            Shading
+          </label>
+        </div>
+
+        <hr style={{ border: '0', borderTop: '1px solid rgba(255,255,255,0.08)', margin: '12px 0 8px' }} />
+        <div style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'rgba(255,255,255,0.4)', fontWeight: 'bold', marginBottom: '6px' }}>
+          Aerodynamic Wrench
+        </div>
+        <table style={{ width: '100%', fontSize: '12px', borderCollapse: 'collapse', color: 'var(--ink)', fontFamily: 'monospace' }}>
+          <tbody>
+            <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+              <td style={{ padding: '3px 0', color: 'rgba(255,255,255,0.5)', fontFamily: 'sans-serif' }}>Drive (fwd)</td>
+              <td style={{ textAlign: 'right', fontWeight: 'bold' }}>{formatN(sailForces.f_body[0])}</td>
+            </tr>
+            <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+              <td style={{ padding: '3px 0', color: 'rgba(255,255,255,0.5)', fontFamily: 'sans-serif' }}>Side (stbd)</td>
+              <td style={{ textAlign: 'right', fontWeight: 'bold' }}>{formatN(sailForces.f_body[1])}</td>
+            </tr>
+            <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+              <td style={{ padding: '3px 0', color: 'rgba(255,255,255,0.5)', fontFamily: 'sans-serif' }}>Vertical (up)</td>
+              <td style={{ textAlign: 'right', fontWeight: 'bold' }}>{formatN(-sailForces.f_body[2])}</td>
+            </tr>
+            <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+              <td style={{ padding: '3px 0', color: 'rgba(255,255,255,0.5)', fontFamily: 'sans-serif' }}>|F| Total</td>
+              <td style={{ textAlign: 'right', fontWeight: 'bold' }}>{formatN(Math.sqrt(sailForces.f_body[0]**2 + sailForces.f_body[1]**2 + sailForces.f_body[2]**2))}</td>
+            </tr>
+            <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+              <td style={{ padding: '3px 0', color: 'rgba(255,255,255,0.5)', fontFamily: 'sans-serif' }}>Heel moment</td>
+              <td style={{ textAlign: 'right', fontWeight: 'bold' }}>{formatNm(sailForces.tau_body[0])}</td>
+            </tr>
+            <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+              <td style={{ padding: '3px 0', color: 'rgba(255,255,255,0.5)', fontFamily: 'sans-serif' }}>Pitch moment</td>
+              <td style={{ textAlign: 'right', fontWeight: 'bold' }}>{formatNm(sailForces.tau_body[1])}</td>
+            </tr>
+            <tr>
+              <td style={{ padding: '3px 0', color: 'rgba(255,255,255,0.5)', fontFamily: 'sans-serif' }}>Yaw moment</td>
+              <td style={{ textAlign: 'right', fontWeight: 'bold' }}>{formatNm(sailForces.tau_body[2])}</td>
+            </tr>
+          </tbody>
+        </table>
       </ControlGroup>
       <ControlGroup icon={<Compass size={16} />} title="Steering">
         <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', marginBottom: '8px', color: 'var(--ink)' }}>
@@ -429,11 +522,12 @@ function Slider({
   invertDisplay?: boolean;
 }) {
   const displayValue = invertDisplay ? -value : value;
+  const decimalPlaces = step.toString().split('.')[1]?.length || 0;
   return (
     <label className="slider-row">
       <span>{label}</span>
       <input type="range" value={value} min={min} max={max} step={step} onChange={(e) => onChange(Number(e.target.value))} />
-      <strong>{displayValue.toFixed(step < 1 ? 1 : 0)}{unit}</strong>
+      <strong>{displayValue.toFixed(decimalPlaces)}{unit}</strong>
     </label>
   );
 }

@@ -13,12 +13,17 @@ type SimulatorStore = {
     thrustStbd: number;
   };
   elapsed: number;
+  sailForces: {
+    f_body: [number, number, number];
+    tau_body: [number, number, number];
+  };
   setBoat: (boat: BoatState) => void;
   setElapsed: (elapsed: number) => void;
   resetBoat: () => void;
   setInput: (input: Partial<SimulatorStore['input']>) => void;
   setSetting: <K extends keyof SimSettings>(key: K, value: SimSettings[K]) => void;
   toggleCastOffMode: () => void;
+  setSailForces: (forces: SimulatorStore['sailForces']) => void;
 };
 
 export const useSimulator = create<SimulatorStore>((set) => ({
@@ -38,7 +43,12 @@ export const useSimulator = create<SimulatorStore>((set) => ({
     gpsLon: -80.0,
     autopilotEnabled: false,
     targetHeading: 20,
-    spinnakerEdgeTension: 0.85,
+    sailFullness: 1.0,
+    spinnakerTackSlack: 1.05,
+    spinnakerClewSlack: 1.0,
+    luffPinned: true,
+    showForceArrows: true,
+    pressureShading: true,
     showRigPoints: false,
   },
   input: {
@@ -49,6 +59,10 @@ export const useSimulator = create<SimulatorStore>((set) => ({
     thrustStbd: 0,
   },
   elapsed: 0,
+  sailForces: {
+    f_body: [0, 0, 0],
+    tau_body: [0, 0, 0],
+  },
   setBoat: (boat) => set({ boat }),
   setElapsed: (elapsed) => set({ elapsed }),
   resetBoat: () => {
@@ -59,6 +73,7 @@ export const useSimulator = create<SimulatorStore>((set) => ({
   setSetting: (key, value) => set((state) => ({ settings: { ...state.settings, [key]: value } })),
   toggleCastOffMode: () =>
     set((state) => ({ boat: { ...state.boat, castOffHeadToWind: !state.boat.castOffHeadToWind } })),
+  setSailForces: (sailForces) => set({ sailForces }),
 }));
 
 if (typeof window !== 'undefined') {

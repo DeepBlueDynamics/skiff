@@ -4,3 +4,4 @@ web/node_modules.broken-optional
 web/dist
 skiff.zip
 *.log
+reports/

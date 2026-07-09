@@ -55,7 +55,12 @@ export type SimSettings = {
   gpsLon: number;
   autopilotEnabled: boolean;
   targetHeading: number;
-  spinnakerEdgeTension: number;
+  sailFullness: number;
+  spinnakerTackSlack: number;
+  spinnakerClewSlack: number;
+  luffPinned: boolean;
+  showForceArrows: boolean;
+  pressureShading: boolean;
   showRigPoints: boolean;
 };
 

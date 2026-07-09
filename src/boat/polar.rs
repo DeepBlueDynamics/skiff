@@ -25,10 +25,15 @@ impl BoatProfile for PolarProfile {
         let tws_knots = mps_to_knots(tws_mps);
         let wind_to_deg = input.wind_water_mps.to_deg();
         let twa_deg = angle_diff_deg(input.heading_true_deg, wind_to_deg);
+        // Design: port/starboard symmetry via abs(TWA) is intentional for now
+        // (see plan §4.7). Asymmetric tables / leeway-signed polars are future work.
         let twa_abs = twa_deg.abs().min(180.0);
         let base_stw_knots = self.lookup_speed_knots(tws_knots, twa_abs);
         let trim_factor = input.sail_trim.clamp(0.0, 1.0);
         let reef_factor = 1.0 - input.reef.clamp(0.0, 1.0);
+        // Design: wave_speed_factor slows STW (physics). The same factor is also
+        // exposed on BoatOutput.wave_penalty and re-used as comfort cost in the
+        // router (preference). Double-influence is intentional — see plan §4.7.
         let wave_factor = wave_speed_factor(
             input.heading_true_deg,
             input.wave_to_deg,
@@ -62,6 +67,22 @@ impl PolarProfile {
         if self.tws_knots.is_empty() || self.twa_deg.is_empty() || self.speed_knots.is_empty() {
             return 0.0;
         }
+
+        // Design: below the first TWS table row, scale STW linearly toward 0 at
+        // 0 kt (do not clamp to the first-row polar, which overstates light air).
+        let first_tws = self.tws_knots[0];
+        if tws_knots < first_tws {
+            if tws_knots <= 0.0 || first_tws <= 0.0 {
+                return 0.0;
+            }
+            let at_first = self.lookup_speed_knots_in_table(first_tws, twa_deg);
+            return at_first * (tws_knots / first_tws);
+        }
+
+        self.lookup_speed_knots_in_table(tws_knots, twa_deg)
+    }
+
+    fn lookup_speed_knots_in_table(&self, tws_knots: f64, twa_deg: f64) -> f64 {
         let (tws0, tws1, tws_t) = locate(&self.tws_knots, tws_knots);
         let (twa0, twa1, twa_t) = locate(&self.twa_deg, twa_deg);
 
@@ -111,4 +132,49 @@ fn locate(values: &[f64], value: f64) -> (usize, usize, f64) {
 
 fn lerp(a: f64, b: f64, t: f64) -> f64 {
     a + (b - a) * t.clamp(0.0, 1.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::boat::leeway::LeewayModel;
+    use crate::boat::wave_penalty::WavePenaltyModel;
+
+    fn sample_polar() -> PolarProfile {
+        PolarProfile {
+            id: "test-polar".into(),
+            // First TWS row at 10 kt → 5.0 kn boat speed at 90° TWA.
+            tws_knots: vec![10.0, 20.0],
+            twa_deg: vec![60.0, 90.0],
+            speed_knots: vec![
+                vec![4.0, 5.0], // 10 kt TWS
+                vec![6.0, 8.0], // 20 kt TWS
+            ],
+            wave_penalty: WavePenaltyModel::default(),
+            leeway_model: LeewayModel::default(),
+        }
+    }
+
+    #[test]
+    fn below_first_tws_row_scales_linearly_toward_zero() {
+        let p = sample_polar();
+        // At the first table row.
+        let at_10 = p.lookup_speed_knots(10.0, 90.0);
+        assert!((at_10 - 5.0).abs() < 1e-9, "got {at_10}");
+
+        // Halfway to first row → half speed (not clamped to 5.0).
+        let at_5 = p.lookup_speed_knots(5.0, 90.0);
+        assert!(
+            (at_5 - 2.5).abs() < 1e-9,
+            "expected 2.5 kt (linear light-air scale), got {at_5}"
+        );
+
+        // Zero wind → zero boat speed.
+        let at_0 = p.lookup_speed_knots(0.0, 90.0);
+        assert!((at_0 - 0.0).abs() < 1e-9, "got {at_0}");
+
+        // Slightly below first row.
+        let at_1 = p.lookup_speed_knots(1.0, 90.0);
+        assert!((at_1 - 0.5).abs() < 1e-9, "got {at_1}");
+    }
 }

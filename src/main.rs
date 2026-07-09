@@ -75,8 +75,16 @@ pub struct FullSimState {
     pub heel_deg: f64,
     pub pitch_deg: f64,
     pub bob_m: f64,
+    /// True wind angle (deg): `angle_diff_deg(heading_true, wind_to)` over water.
     pub twa_deg: f64,
+    /// True wind speed (m/s) over water.
     pub tws_mps: f64,
+    /// Apparent wind angle (deg, boat-relative; same sign convention as legacy HUD).
+    #[serde(default)]
+    pub awa_deg: f64,
+    /// Apparent wind speed (m/s).
+    #[serde(default)]
+    pub aws_mps: f64,
     pub course: String,
     pub control: SimControlInput,
     pub env: MetOcean,
@@ -182,6 +190,8 @@ fn create_initial_state() -> FullSimState {
         bob_m: 0.0,
         twa_deg: 0.0,
         tws_mps: 0.0,
+        awa_deg: 0.0,
+        aws_mps: 0.0,
         course: "HeadToWind".to_string(),
         control: SimControlInput {
             helm: 0.0,
@@ -307,7 +317,7 @@ async fn main() -> anyhow::Result<()> {
             };
             let ctrl_phys = cat_physics::CatControl {
                 rudder_cmd: state.control.helm * params.rudder_max,
-                sail_trim: state.control.sail_trim * 15.0f64.to_radians(),
+                sail_trim: cat_physics::sail_trim_to_sheet_rad(state.control.sail_trim),
                 thrust_port: state.control.thrust_port,
                 thrust_stbd: state.control.thrust_stbd,
             };
@@ -353,7 +363,7 @@ async fn main() -> anyhow::Result<()> {
             state.bob_m = -eta[2]; // NED down: bob height is negative of z
             state.leeway_deg = (-nu[1]).atan2(nu[0].max(1.0e-3)).to_degrees();
 
-            // Apparent wind
+            // Apparent wind (body frame at mast CE height)
             let wind_body = cat_physics::rotate_world_to_body(&r_mat, env_phys.wind_world);
             let v_pt_air = [
                 ground_lin[0] - nu[4] * params.mast_ce_height,
@@ -366,9 +376,15 @@ async fn main() -> anyhow::Result<()> {
             ];
             let aws = awv[0].hypot(awv[1]);
             let awa_rad = awv[1].atan2(awv[0]);
+            // Boat-relative AWA (deg); sign matches legacy HUD field that lived on twa_deg.
+            state.aws_mps = aws;
+            state.awa_deg = -awa_rad.to_degrees();
 
-            state.tws_mps = aws;
-            state.twa_deg = -awa_rad.to_degrees();
+            // True wind over water (plan §2.2)
+            let wind_water = wind_over_water(&state.env);
+            let wind_to_deg = wind_water.to_deg();
+            state.tws_mps = wind_water.magnitude();
+            state.twa_deg = angle_diff_deg(state.heading_true_deg, wind_to_deg);
 
             let over_ground_vec = Vec2Mps { east: -ground_world[1], north: ground_world[0] };
             state.local_pos_m = state.local_pos_m + over_ground_vec * dt;
@@ -384,11 +400,11 @@ async fn main() -> anyhow::Result<()> {
             }
 
             // Wave height at location (needed for bridgedeck slam checking)
-            let wave_to_deg = state.env.wave_to_deg.unwrap_or(290.0);
+            let wave_to_deg_env = state.env.wave_to_deg.unwrap_or(290.0);
             let wave_height_m = state.env.wave_height_m.unwrap_or(0.8);
             let wave_period_s = state.env.wave_period_s.unwrap_or(7.0);
 
-            let wave_rad = wave_to_deg.to_radians();
+            let wave_rad = wave_to_deg_env.to_radians();
             let along = state.local_pos_m.east * wave_rad.sin() + state.local_pos_m.north * wave_rad.cos();
             let phase = along * 0.08 - (state.elapsed_s / wave_period_s) * std::f64::consts::PI * 2.0;
             let wave_height = phase.sin() * wave_height_m * 0.36 + (phase * 1.7 + 0.8).sin() * wave_height_m * 0.09;
@@ -398,11 +414,8 @@ async fn main() -> anyhow::Result<()> {
             let penetration = wave_height - (-underside);
             state.slam_warning = penetration > 0.1 && state.stw_mps > 2.0;
 
-            // Course classification
-            let wind_water = wind_over_water(&state.env);
-            let wind_to_deg = wind_water.to_deg();
-            let twa_true_deg = angle_diff_deg(state.heading_true_deg, wind_to_deg);
-            state.course = format!("{:?}", classify_course(twa_true_deg.abs()));
+            // Course classification from true TWA
+            state.course = format!("{:?}", classify_course(state.twa_deg.abs()));
 
             // Stability state mapping
             state.stability_state = match state.cat_state.stability {
@@ -425,6 +438,9 @@ async fn main() -> anyhow::Result<()> {
                 };
 
                 let current_bearing_rad = data.env.current_ground_mps.to_deg().to_radians();
+                let wind_water = wind_over_water(&data.env);
+                let wind_from_true_rad =
+                    (wind_water.to_deg() + 180.0).rem_euclid(360.0).to_radians();
 
                 let delta = SignalKDelta {
                     context: "vessels.self".to_string(),
@@ -466,12 +482,22 @@ async fn main() -> anyhow::Result<()> {
                                 value: serde_json::json!(current_bearing_rad),
                             },
                             SignalKPathValue {
+                                path: "environment.wind.speedApparent".to_string(),
+                                value: serde_json::json!(data.aws_mps),
+                            },
+                            SignalKPathValue {
+                                path: "environment.wind.angleApparent".to_string(),
+                                // Boat-relative radians (same sign as awa_deg).
+                                value: serde_json::json!(data.awa_deg.to_radians()),
+                            },
+                            SignalKPathValue {
                                 path: "environment.wind.speedTrue".to_string(),
                                 value: serde_json::json!(data.tws_mps),
                             },
                             SignalKPathValue {
+                                // True-north FROM direction (rad), plan §2.2.
                                 path: "environment.wind.directionTrue".to_string(),
-                                value: serde_json::json!(data.twa_deg.to_radians()),
+                                value: serde_json::json!(wind_from_true_rad),
                             },
                         ],
                     }],
