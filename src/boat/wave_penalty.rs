@@ -50,8 +50,11 @@ pub fn wave_speed_factor(
         0.0
     };
 
+    // Head-sea factor ∈ [0,1]: 1 = waves propagating opposite the bow (head sea),
+    // 0 = following sea. `wave_to` is propagation (TO) direction — do NOT add 180
+    // here (that inverted the penalty so following seas were punished instead).
     let head_sea = wave_to_deg
-        .map(|w| angle_diff_deg(heading_true_deg, normalize_360(w + 180.0)).abs() / 180.0)
+        .map(|w| angle_diff_deg(heading_true_deg, normalize_360(w)).abs() / 180.0)
         .unwrap_or(0.0);
 
     let penalty = model.height_coeff * h
@@ -90,5 +93,28 @@ mod tests {
             f_waves < 1.0 - 0.1,
             "expected material short-period penalty with height, got {f_waves}"
         );
+    }
+
+    #[test]
+    fn head_sea_penalized_more_than_following_sea() {
+        let model = WavePenaltyModel {
+            height_coeff: 0.0,
+            short_period_coeff: 0.0,
+            head_sea_coeff: 0.4,
+            min_period_s: 5.0,
+        };
+        let h = Some(1.0);
+        let p = Some(10.0); // no short-period term
+        // Heading north (0°). Head sea: waves from north → propagate TO 180°.
+        let head = wave_speed_factor(0.0, Some(180.0), h, p, model);
+        // Following sea: waves from south → propagate TO 0°.
+        let follow = wave_speed_factor(0.0, Some(0.0), h, p, model);
+        assert!(
+            head < follow,
+            "head sea must be slower (more penalty) than following: head={head}, follow={follow}"
+        );
+        // Head ≈ 1 - 0.4 = 0.6; following ≈ 1.0
+        assert!((head - 0.6).abs() < 1e-9, "got head={head}");
+        assert!((follow - 1.0).abs() < 1e-9, "got follow={follow}");
     }
 }

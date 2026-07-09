@@ -127,8 +127,9 @@ fn main() {
 /// Router/CLI castoff-compatible prediction at full trim, flat water, no current.
 fn router_polar_stw_mps(profile: &CastOffProfile, tws_kt: f64, twa_abs_deg: f64) -> f64 {
     let tws_mps = knots_to_mps(tws_kt);
-    // Heading 0°, wind TO = −TWA so angle_diff_deg(heading, wind_to) = +TWA.
-    let wind_to_deg = -twa_abs_deg;
+    // Heading 0°, desired |TWA| (FROM-convention): wind_from = heading − TWA,
+    // wind_to = wind_from + 180.
+    let wind_to_deg = TARGET_HEADING_DEG - twa_abs_deg + 180.0;
     let wind_water = Vec2Mps::from_speed_to_deg(tws_mps, wind_to_deg);
     let out = profile.predict(BoatInput {
         heading_true_deg: TARGET_HEADING_DEG,
@@ -150,8 +151,8 @@ fn run_case(
     sail_trim_01: f64,
 ) -> (f64, StabilityState) {
     let tws_mps = knots_to_mps(tws_kt);
-    // Wind TO direction for desired true-wind angle relative to fixed heading.
-    let wind_to_deg = TARGET_HEADING_DEG - twa_deg;
+    // Wind TO for desired true-wind angle (FROM-convention TWA).
+    let wind_to_deg = TARGET_HEADING_DEG - twa_deg + 180.0;
     let wind_to_rad = wind_to_deg.to_radians();
     let env = Environment {
         // World frame matches main.rs: [north, east, 0], TO convention.
@@ -182,9 +183,9 @@ fn run_case(
         let heading = (-st.eta[5]).to_degrees().rem_euclid(360.0);
         let err_deg = normalize_180(TARGET_HEADING_DEG - heading);
         let err_rad = err_deg.to_radians();
-        // Positive error (heading left of target) → starboard rudder (negative ψ rate toward target).
-        // rudder chord uses −st.rudder; sign chosen so P-control reduces heading error in practice.
-        let rudder_cmd = (HEADING_KP * err_rad).clamp(-params.rudder_max, params.rudder_max);
+        // heading_true = −ψ; rudder chord uses −st.rudder. Negative feedback on reported
+        // heading error (verified: +KP spins through the wind once the sail draws).
+        let rudder_cmd = (-HEADING_KP * err_rad).clamp(-params.rudder_max, params.rudder_max);
 
         let ctrl = CatControl {
             rudder_cmd,
@@ -235,7 +236,7 @@ fn format_report(points: &[PointResult], profile_id: &str) -> String {
     out.push_str(&format!(
         "- **Router polar:** `{profile_id}` via `CastOffProfile::default()` at sail_trim=1.0, reef=0, flat water, no current\n"
     ));
-    out.push_str("- **Environment:** constant TWS, TWA = |heading − wind_to|, flat water, zero current\n");
+    out.push_str("- **Environment:** constant TWS, TWA = |heading − wind_from| (from-convention), flat water, zero current\n");
     out.push_str(&format!(
         "- **delta_pct:** `(sim_kts − polar_kts) / polar_kts × 100`\n\n"
     ));

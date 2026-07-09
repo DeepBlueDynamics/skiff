@@ -219,7 +219,12 @@ pub fn wrap_pi(a: f64) -> f64 {
     (a + std::f64::consts::PI).rem_euclid(2.0 * std::f64::consts::PI) - std::f64::consts::PI
 }
 
+/// Symmetric hydro foil (skeg/rudder). Chord may reverse when flow is from astern
+/// of the section; lift uses CCW-from-flow × sign(α) (resists leeway correctly).
 fn foil_force_2d(inflow_xy: [f64; 2], chord_unit: [f64; 2], foil: &Foil, rho: f64) -> [f64; 3] {
+    if foil.is_sail {
+        return sail_force_2d(inflow_xy, chord_unit, foil, rho);
+    }
     let v = inflow_xy[0].hypot(inflow_xy[1]);
     if v < 1e-4 {
         return [0.0, 0.0, 0.0];
@@ -254,10 +259,79 @@ fn foil_force_2d(inflow_xy: [f64; 2], chord_unit: [f64; 2], foil: &Foil, rho: f6
     let lift = q * foil.area * cl;
     let drag = q * foil.area * cd;
     let sign = if alpha >= 0.0 { 1.0 } else { -1.0 };
+    // CCW normal from flow (hydro convention).
     let perp = [-flow_dir[1], flow_dir[0]];
     let fx = drag * flow_dir[0] + lift * perp[0] * sign;
     let fy = drag * flow_dir[1] + lift * perp[1] * sign;
     [fx, fy, 0.0]
+}
+
+/// Soft-cloth sail force. Differs from the hydro path in [`foil_force_2d`]:
+/// - Chord is **luff→leech** (aft and leeward): `(-cos φ, sin φ)` for sheet φ.
+/// - **No chord flip** — preferred orientation only.
+/// - Lift uses CCW-from-flow × sign(α) with that chord (forward drive when drawing).
+/// - **Aback / |α|>90° → flogging**: tiny residual drag (no multi-kN reverse lock-in).
+fn sail_force_2d(inflow_xy: [f64; 2], chord_unit: [f64; 2], foil: &Foil, rho: f64) -> [f64; 3] {
+    let v = inflow_xy[0].hypot(inflow_xy[1]);
+    if v < 1e-4 {
+        return [0.0, 0.0, 0.0];
+    }
+    let flow_dir = [inflow_xy[0] / v, inflow_xy[1] / v];
+    let c = chord_unit;
+    let cross_val = c[0] * flow_dir[1] - c[1] * flow_dir[0];
+    let dot_val = c[0] * flow_dir[0] + c[1] * flow_dir[1];
+    let alpha = cross_val.atan2(dot_val);
+    let a_abs = alpha.abs();
+    let stall = foil.stall_deg.to_radians();
+
+    // Aback or past 90° AoA: sail flogs — no organized lift, tiny residual drag.
+    let aback = dot_val < 0.0 || a_abs > std::f64::consts::FRAC_PI_2;
+    if aback {
+        let q = 0.5 * rho * v * v;
+        // ~8% effective area, Cd≈0.15 — soft cloth, not a rigid plate aback.
+        let drag = q * foil.area * 0.08 * 0.15;
+        return [drag * flow_dir[0], drag * flow_dir[1], 0.0];
+    }
+
+    let cl_lin = foil.lift_slope() * a_abs;
+    let (cl, cd) = if a_abs <= stall {
+        let cl = cl_lin;
+        let cd = foil.cd0 + cl * cl / (std::f64::consts::PI * foil.aspect_ratio * foil.oswald);
+        (cl, cd)
+    } else {
+        let cl_peak = foil.lift_slope() * stall;
+        let cl = (cl_peak - (a_abs - stall) * 2.0).max(0.0);
+        let cd_attached =
+            foil.cd0 + cl_peak * cl_peak / (std::f64::consts::PI * foil.aspect_ratio * foil.oswald);
+        let cd = cd_attached + 1.2 * (a_abs.sin() - stall.sin()).powi(2) * 6.0;
+        (cl, cd)
+    };
+
+    let q = 0.5 * rho * v * v;
+    let lift = q * foil.area * cl;
+    let drag = q * foil.area * cd;
+    let sign = if alpha >= 0.0 { 1.0 } else { -1.0 };
+    // CCW normal × sign(α) with luff→leech chord → +surge when drawing.
+    let perp = [-flow_dir[1], flow_dir[0]];
+    let fx = drag * flow_dir[0] + lift * perp[0] * sign;
+    let fy = drag * flow_dir[1] + lift * perp[1] * sign;
+    [fx, fy, 0.0]
+}
+
+/// Sheet angle (rad from centerline, +stbd) → unit chord **luff→leech** (aft & leeward).
+/// boom=0 ⇒ chord = (−1, 0) (aft along centerline); boom=+30° ⇒ aft-starboard.
+fn sail_chord_from_boom(boom: f64) -> [f64; 2] {
+    [-boom.cos(), boom.sin()]
+}
+
+/// Weathervane sheet angle: boom that aligns luff→leech chord with apparent-wind TO.
+/// For AWA TO = θ, φ* = sign(θ)·(π − |θ|) so chord (−cos φ, sin φ) ∥ flow.
+fn sail_weathervane_boom(awa: f64) -> f64 {
+    if awa.abs() < 1e-12 {
+        0.0
+    } else {
+        awa.signum() * (std::f64::consts::PI - awa.abs())
+    }
 }
 
 /// Apply a body-frame force at position `r` (body coords relative to CG).
@@ -386,20 +460,23 @@ fn coefficient_sail_wrench(
     ];
     let inflow = [wind_body[0] - v_ce[0], wind_body[1] - v_ce[1]];
 
-    // Sheet/boom: `ctrl.sail_trim` is max sheet angle (rad) from
-    // [`sail_trim_to_sheet_rad`]. Sign toward leeward (same sign as AWA).
-    // Weathervane clamp: |boom| cannot exceed |AWA| (cannot sheet above the wind).
+    // Sheet/boom: `ctrl.sail_trim` is max ease angle from centerline (rad).
+    // Weathervane boom aligns chord with AWA TO; sheet clamps |boom| ≤ trim
+    // (hard sheet = small trim, cannot ease all the way to the wind).
     let awa = inflow[1].atan2(inflow[0]);
     let trim = ctrl.sail_trim.abs();
-    let boom = if awa.abs() <= trim {
-        awa
+    let wv = sail_weathervane_boom(awa);
+    let boom = if wv.abs() <= trim {
+        wv // eased to the wind (or wind inside the sheet)
     } else if awa == 0.0 {
         0.0
     } else {
-        awa.signum() * trim
+        // Sheet hard against the wind: boom at trim, same tack as weathervane.
+        wv.signum() * trim
     };
 
-    let f = foil_force_2d(inflow, [boom.cos(), boom.sin()], &p.sail, RHO_AIR);
+    let chord = sail_chord_from_boom(boom);
+    let f = foil_force_2d(inflow, chord, &p.sail, RHO_AIR);
     apply_at(f, p.sail.r)
 }
 
@@ -762,9 +839,10 @@ pub fn lagoon_450s() -> CatParams {
         aspect_ratio: 5.0,
         cd0: 0.08,
         stall_deg: 22.0,
-        // Provisional CE: ~0.5 m aft of CG (r_x < 0) for weather-helm lever arm;
-        // 8 m above CG (body +Z down). Fore-aft to be refined from Blender `ce.*`.
-        r: [-0.5, 0.0, -8.0],
+        // Provisional CE: modestly aft of CG for weather-helm lever (not so far that
+        // neutral-helm free response rounds up into irons before the boat can power up).
+        // 8 m above CG (body +Z down). Refine from Blender `ce.*` empties later.
+        r: [-0.25, 0.0, -8.0],
         oswald: 0.85,
         is_sail: true,
     };
@@ -934,5 +1012,99 @@ mod tests {
         assert!(wrench[5].abs() > 1.0);
         // Heel from height: Mx = −r_z * Fy = 8 * 1000
         assert!((wrench[3] - (-p.sail.r[2]) * f_side[1]).abs() < 1e-12);
+    }
+
+    #[test]
+    fn sail_beam_reach_produces_forward_drive() {
+        let p = lagoon_450s();
+        // AWA TO = 90° (beam), boom sheeted to 40° → drawing, must drive forward.
+        let inflow = [0.0, 7.0];
+        let boom = 40.0f64.to_radians();
+        let f = sail_force_2d(inflow, sail_chord_from_boom(boom), &p.sail, RHO_AIR);
+        assert!(
+            f[0] > 500.0,
+            "beam-reach sail should produce strong +surge, got Fx={}",
+            f[0]
+        );
+    }
+
+    #[test]
+    fn sail_close_hauled_geometry_draws_not_aback() {
+        let p = lagoon_450s();
+        // AWA TO ≈ 135° (close-hauled), boom 25° — classic drawing set.
+        let awa = 135.0f64.to_radians();
+        let inflow = [7.0 * awa.cos(), 7.0 * awa.sin()];
+        let boom = 25.0f64.to_radians();
+        let chord = sail_chord_from_boom(boom);
+        let f = sail_force_2d(inflow, chord, &p.sail, RHO_AIR);
+        assert!(
+            f[0] > 200.0,
+            "close-hauled should drive forward, got F={f:?}"
+        );
+        // Chord must point aft-ish (luff→leech).
+        assert!(chord[0] < 0.0, "chord x should be aft, got {chord:?}");
+    }
+
+    #[test]
+    fn sail_aback_or_head_to_wind_flogs_not_hard_reverse() {
+        let p = lagoon_450s();
+        // Head-to-wind, boom on centerline: aligned chord, only light Cd0 drag (not kN reverse).
+        let f_htw = sail_force_2d([-7.0, 0.0], sail_chord_from_boom(0.0), &p.sail, RHO_AIR);
+        assert!(
+            f_htw[0].abs() < 500.0,
+            "head-to-wind aligned should be light drag, got F={f_htw:?}"
+        );
+        // Explicitly aback: flow against leech→luff.
+        let f_aback = sail_force_2d([6.0, 0.0], sail_chord_from_boom(0.0), &p.sail, RHO_AIR);
+        let mag_aback = f_aback[0].hypot(f_aback[1]);
+        assert!(
+            mag_aback < 400.0,
+            "aback sail should flog, got |F|={mag_aback} F={f_aback:?}"
+        );
+    }
+
+    /// Free boat, neutral helm, default-like env: must not lock into persistent sternway.
+    #[test]
+    fn free_sail_does_not_lock_sternway() {
+        let p = lagoon_450s();
+        let wind_spd = 7.2;
+        let wind_to = 150.0f64.to_radians();
+        let env = Environment {
+            wind_world: [wind_spd * wind_to.cos(), wind_spd * wind_to.sin(), 0.0],
+            current_world: [
+                0.55 * 85.0f64.to_radians().cos(),
+                0.55 * 85.0f64.to_radians().sin(),
+                0.0,
+            ],
+        };
+        let mut st = CatState {
+            eta: [0.0, 0.0, 0.0, 0.0, 0.0, 20.0f64.to_radians()],
+            nu: [0.0; 6],
+            rudder: 0.0,
+            stability: StabilityState::Upright,
+        };
+        let ctrl = CatControl {
+            rudder_cmd: 0.0,
+            sail_trim: sail_trim_to_sheet_rad(0.76),
+            thrust_port: 0.0,
+            thrust_stbd: 0.0,
+        };
+        let dt = 0.05;
+        let n = (120.0 / dt) as usize;
+        let mut min_u: f64 = 0.0;
+        let mut u_at_120: f64 = 0.0;
+        for step in 0..n {
+            st = cat_step(&st, &ctrl, &env, &p, dt, None);
+            min_u = min_u.min(st.nu[0]);
+            u_at_120 = st.nu[0];
+        }
+        assert!(
+            min_u > -0.35,
+            "free sail had deep sternway min u={min_u}"
+        );
+        assert!(
+            u_at_120 > 0.5,
+            "free sail should power up by 120s, got u={u_at_120}"
+        );
     }
 }

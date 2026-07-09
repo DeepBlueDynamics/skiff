@@ -17,7 +17,10 @@ const WELD_EPS = 1e-3;
 
 // Rig attachment points (glTF frame, boat-local — verified against lagoon-450s.glb)
 const TACK_ANCHOR = new THREE.Vector3(-0.041, 2.028, 7.321); // Object.541 tack ring on the bowsprit
-const CLEW_ANCHOR = new THREE.Vector3(2.459, 2.108, -4.033); // starboard end of the traveler track (Object.122), near the helm
+// Object.122 traveler track ends (mirrored port/starboard), near the helm.
+// In this frame +x renders on the visual PORT side of the boat.
+const SHEET_LEAD_PORT = new THREE.Vector3(2.459, 2.108, -4.033);
+const SHEET_LEAD_STARBOARD = new THREE.Vector3(-2.459, 2.108, -4.033);
 
 class Particle {
   pos: THREE.Vector3;
@@ -43,11 +46,13 @@ type Spring = [number, number, number, boolean, number];
 export function SpinnakerSail() {
   const settings = useSimulator((state) => state.settings);
   const setSailForces = useSimulator((state) => state.setSailForces);
+  const sheetSide = useSimulator((state) => state.settings.sheetSide);
 
   // The real asymmetric sail exported from Blender — used as the cloth rest shape.
   const { scene: jibScene } = useGLTF('/sail-jib.glb');
 
   const sim = useMemo(() => {
+    const CLEW_ANCHOR = sheetSide === 'port' ? SHEET_LEAD_PORT : SHEET_LEAD_STARBOARD;
     jibScene.updateMatrixWorld(true);
     let srcMesh: THREE.Mesh | null = null;
     jibScene.traverse((child) => {
@@ -283,6 +288,50 @@ export function SpinnakerSail() {
     material.side = THREE.DoubleSide;
     material.vertexColors = true;
 
+    // Precompute shared edges list for crumple normal coherence check
+    const edgeTriangles = new Map<string, number[]>();
+    for (let t = 0; t < triangles.length; t += 3) {
+      const tIdx = t / 3;
+      const edges = [
+        getEdgeKey(triangles[t], triangles[t + 1]),
+        getEdgeKey(triangles[t + 1], triangles[t + 2]),
+        getEdgeKey(triangles[t + 2], triangles[t])
+      ];
+      for (const edge of edges) {
+        let list = edgeTriangles.get(edge);
+        if (!list) {
+          list = [];
+          edgeTriangles.set(edge, list);
+        }
+        list.push(tIdx);
+      }
+    }
+
+    const sharedEdgesList: number[] = [];
+    for (const list of edgeTriangles.values()) {
+      if (list.length === 2) {
+        sharedEdgesList.push(list[0], list[1]);
+      }
+    }
+    const sharedEdgeCount = sharedEdgesList.length / 2;
+    const sharedEdgesArray = new Int32Array(sharedEdgesList);
+
+    // Preallocated arrays for self-collision spatial hash & normal coherence
+    const HASH_SIZE = 1024;
+    const collisionHead = new Int32Array(HASH_SIZE);
+    const collisionNext = new Int32Array(clothCount);
+    const neighborMatrix = new Uint8Array(clothCount * clothCount);
+    const triNormals = new Float32Array((triangles.length / 3) * 3);
+
+    // Build neighbor matrix from cloth springs
+    for (let i = 0; i < clothSpringCount; i++) {
+      const s = springs[i];
+      if (s[0] < clothCount && s[1] < clothCount) {
+        neighborMatrix[s[0] * clothCount + s[1]] = 1;
+        neighborMatrix[s[1] * clothCount + s[0]] = 1;
+      }
+    }
+
     return {
       parts,
       springs,
@@ -297,10 +346,17 @@ export function SpinnakerSail() {
       luffNodes,
       tackRope,
       clewRope,
+      clewAnchor: CLEW_ANCHOR,
       geometry,
       material,
+      sharedEdgesArray,
+      sharedEdgeCount,
+      collisionHead,
+      collisionNext,
+      neighborMatrix,
+      triNormals,
     };
-  }, [jibScene]);
+  }, [jibScene, sheetSide]);
 
   const accumulator = useRef(0);
   const filteredForce = useRef(new THREE.Vector3());
@@ -311,6 +367,7 @@ export function SpinnakerSail() {
   const timeSinceLastDebug = useRef(0);
   const timeSinceLastStoreUpdate = useRef(0);
   const seqRef = useRef(0);
+  const hasLoggedCrumpled = useRef(false);
 
   const tackLineMesh = useMemo(() => new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0x7ce0a0 })), []);
   const clewLineMesh = useMemo(() => new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffd166 })), []);
@@ -335,7 +392,7 @@ export function SpinnakerSail() {
 
   // Update physics at 60fps
   useFrame((state, delta) => {
-    const { parts, springs, clothSpringCount, triangles, clothCount, weldMap, MASS, headI, tackI, clewI, luffNodes, tackRope, clewRope, geometry } = sim;
+    const { parts, springs, clothSpringCount, triangles, clothCount, weldMap, MASS, headI, tackI, clewI, luffNodes, tackRope, clewRope, geometry, sharedEdgesArray, sharedEdgeCount, collisionHead, collisionNext, neighborMatrix, triNormals } = sim;
 
     const currentSimState = useSimulator.getState();
     const currentSettings = currentSimState.settings;
@@ -431,7 +488,7 @@ export function SpinnakerSail() {
     parts[tackRope.anchorIdx].pinned = true;
     parts[tackRope.anchorIdx].target.copy(TACK_ANCHOR);
     parts[clewRope.anchorIdx].pinned = true;
-    parts[clewRope.anchorIdx].target.copy(CLEW_ANCHOR);
+    parts[clewRope.anchorIdx].target.copy(sim.clewAnchor);
 
     // Accumulator for fixed-timestep execution
     accumulator.current += Math.min(delta, 0.1);
@@ -587,6 +644,77 @@ export function SpinnakerSail() {
             if (p.pinned) p.pos.copy(p.target);
           }
         }
+
+        // Particle-level self-collision projection
+        const HASH_SIZE = 1024;
+        collisionHead.fill(-1);
+
+        // 1. Build spatial hash over cloth particles each substep
+        for (let i = 0; i < clothCount; i++) {
+          const p = parts[i];
+          const gx = Math.floor(p.pos.x / 0.10);
+          const gy = Math.floor(p.pos.y / 0.10);
+          const gz = Math.floor(p.pos.z / 0.10);
+          const hashIdx = (Math.abs(gx * 73856093 ^ gy * 19349663 ^ gz * 83492791)) % HASH_SIZE;
+          collisionNext[i] = collisionHead[hashIdx];
+          collisionHead[hashIdx] = i;
+        }
+
+        // 2. Resolve self-collisions for particles within 0.10m that are not topological neighbors
+        for (let i = 0; i < clothCount; i++) {
+          const p1 = parts[i];
+          const gx = Math.floor(p1.pos.x / 0.10);
+          const gy = Math.floor(p1.pos.y / 0.10);
+          const gz = Math.floor(p1.pos.z / 0.10);
+
+          for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+              for (let dz = -1; dz <= 1; dz++) {
+                const hashIdx = (Math.abs((gx + dx) * 73856093 ^ (gy + dy) * 19349663 ^ (gz + dz) * 83492791)) % HASH_SIZE;
+                let j = collisionHead[hashIdx];
+                while (j !== -1) {
+                  if (j > i) {
+                    if (neighborMatrix[i * clothCount + j] === 0) {
+                      const p2 = parts[j];
+                      const dx_val = p2.pos.x - p1.pos.x;
+                      const dy_val = p2.pos.y - p1.pos.y;
+                      const dz_val = p2.pos.z - p1.pos.z;
+                      const distSq = dx_val * dx_val + dy_val * dy_val + dz_val * dz_val;
+                      if (distSq < 0.01 && distSq > 1e-8) {
+                        const dist = Math.sqrt(distSq);
+                        const overlap = 0.10 - dist;
+                        const m1 = p1.pinned ? 0 : 1;
+                        const m2 = p2.pinned ? 0 : 1;
+                        const sum = m1 + m2;
+                        if (sum > 0) {
+                          const pushX = (dx_val / dist) * overlap / sum;
+                          const pushY = (dy_val / dist) * overlap / sum;
+                          const pushZ = (dz_val / dist) * overlap / sum;
+                          if (m1) {
+                            p1.pos.x -= pushX;
+                            p1.pos.y -= pushY;
+                            p1.pos.z -= pushZ;
+                          }
+                          if (m2) {
+                            p2.pos.x += pushX;
+                            p2.pos.y += pushY;
+                            p2.pos.z += pushZ;
+                          }
+                        }
+                      }
+                    }
+                  }
+                  j = collisionNext[j];
+                }
+              }
+            }
+          }
+        }
+
+        // 3. Ensure pinned nodes stay perfectly target-aligned
+        for (const p of parts) {
+          if (p.pinned) p.pos.copy(p.target);
+        }
       }
 
       stepAccumulated += SUBSTEPS;
@@ -647,7 +775,7 @@ export function SpinnakerSail() {
           fBody: f_body,
           tauBody: tau_body,
           tackDist: parts[tackI].pos.distanceTo(TACK_ANCHOR),
-          clewDist: parts[clewI].pos.distanceTo(CLEW_ANCHOR),
+          clewDist: parts[clewI].pos.distanceTo(sim.clewAnchor),
           windLocal: [windVelocity.x, windVelocity.y, windVelocity.z],
           windWorldDeg: windWorldDeg,
         };
@@ -719,6 +847,59 @@ export function SpinnakerSail() {
 
       geometry.computeVertexNormals();
 
+      // Crumple detection (recovery affordance check)
+      // 1. Calculate triangle unit normals
+      for (let t = 0; t < triangles.length; t += 3) {
+        const ia = triangles[t];
+        const ib = triangles[t + 1];
+        const ic = triangles[t + 2];
+        ab.subVectors(parts[ib].pos, parts[ia].pos);
+        ac.subVectors(parts[ic].pos, parts[ia].pos);
+        nrm.crossVectors(ab, ac).normalize();
+        const tIdx = t / 3;
+        triNormals[tIdx * 3] = nrm.x;
+        triNormals[tIdx * 3 + 1] = nrm.y;
+        triNormals[tIdx * 3 + 2] = nrm.z;
+      }
+
+      // 2. Compute mean coherence over shared edges
+      let dotSum = 0;
+      for (let i = 0; i < sharedEdgeCount; i++) {
+        const t1 = sharedEdgesArray[i * 2];
+        const t2 = sharedEdgesArray[i * 2 + 1];
+        const n1x = triNormals[t1 * 3];
+        const n1y = triNormals[t1 * 3 + 1];
+        const n1z = triNormals[t1 * 3 + 2];
+        const n2x = triNormals[t2 * 3];
+        const n2y = triNormals[t2 * 3 + 1];
+        const n2z = triNormals[t2 * 3 + 2];
+        dotSum += n1x * n2x + n1y * n2y + n1z * n2z;
+      }
+      const meanCoherence = sharedEdgeCount > 0 ? dotSum / sharedEdgeCount : 1.0;
+
+      // 3. Compute mean cloth particle velocity
+      let velSum = 0;
+      for (let i = 0; i < clothCount; i++) {
+        const p = parts[i];
+        const vx = (p.pos.x - p.prev.x) / FRAME_TIME;
+        const vy = (p.pos.y - p.prev.y) / FRAME_TIME;
+        const vz = (p.pos.z - p.prev.z) / FRAME_TIME;
+        velSum += Math.sqrt(vx * vx + vy * vy + vz * vz);
+      }
+      const meanVelocity = velSum / clothCount;
+
+      // 4. Log alert if velocity is low but normals are decoherent (crumpled)
+      if (meanVelocity < 0.05 && meanCoherence < 0.5) {
+        if (!hasLoggedCrumpled.current) {
+          console.warn(
+            `[Sail Physics Alert] Sail detected in heavily crumpled/tangled state! Mean velocity: ${meanVelocity.toFixed(4)} m/s, Normal coherence: ${meanCoherence.toFixed(4)}`
+          );
+          hasLoggedCrumpled.current = true;
+        }
+      } else {
+        hasLoggedCrumpled.current = false;
+      }
+
       // Update tack line mesh
       if (tackLineMesh.geometry) {
         const positions: number[] = [];
@@ -768,7 +949,7 @@ export function SpinnakerSail() {
             <sphereGeometry args={[0.35, 16, 16]} />
             <meshStandardMaterial color="#7ce0a0" emissive="#3aa06a" emissiveIntensity={0.2} />
           </mesh>
-          <mesh position={CLEW_ANCHOR}>
+          <mesh position={sim.clewAnchor}>
             <sphereGeometry args={[0.35, 16, 16]} />
             <meshStandardMaterial color="#7ce0a0" emissive="#3aa06a" emissiveIntensity={0.2} />
           </mesh>

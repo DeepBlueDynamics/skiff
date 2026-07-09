@@ -60,12 +60,16 @@ Backend quirks (self-consistent, keep, do not "fix" silently): `heading_true_deg
 
 SI internally (m, s, kg, N, rad); knots/degrees only at UI/serialization edges (`core/units.rs`). Air ρ = 1.225 kg/m³, water ρ = 1025 kg/m³. Aerodynamic pressure is written explicitly `0.5 * 1.225 * v² * C` — no gain fudge factors baked into constants (retire `WIND_GAIN`).
 
-### 2.4 Sail attachment scheme (owner decision, per implementation doc)
+### 2.4 Sail attachment scheme (owner decision — REVISED 2026-07-09, supersedes the implementation doc's pin/free scheme)
+
+Owner adopted the reference rig from `plan/sail-force-rig.html` after testing:
 
 - **Head:** pinned at its rest position (halyard).
-- **Tack:** pinned **directly** to the bowsprit ring `Object.541`, glTF `(-0.041, 2.028, 7.321)`. No tack rope.
-- **Clew:** free-flying. No clew rope, no rendered lines.
-- Rig attachment points ultimately come from **named objects/empties in the Blender rig** (§5), not hardcoded vectors; the vectors above are the verified interim values.
+- **Tack:** tack-line **rope** to the bowsprit ring `Object.541`, glTF `(-0.041, 2.028, 7.321)`; slack slider 0.9–1.6.
+- **Clew:** sheet **rope** to the active sheet lead — the traveler track ends (`Object.122`), port/starboard selectable via the `sheetSide` setting; slack slider 0.55–1.8.
+- **Luff:** pin-to-chord toggle (`luffPinned`, default on).
+- Rope constraints use adaptive segmentation (~25 cm/segment, min 1) so short spans stay above the solver epsilon.
+- Rig attachment points ultimately come from **named objects/empties in the Blender rig** (§5 / `plan/sails_as_data.md`), not hardcoded vectors; the vectors above are the verified interim values.
 
 ---
 
@@ -110,7 +114,8 @@ Notes:
 - `foil_force_2d` is symmetric-foil; acceptable for v1. A cambered, one-sided variant (nonzero CL at α=0, luffing collapse on the wrong side) is a follow-up (WP-B2).
 - Add hull/rig **windage**: flat-plate drag per axis on projected areas — makes bare-poles drift and capsized states behave.
 - Depowering: `ctrl.reef` scales area (exists); add `flat` (CL multiplier) alongside when tuning.
-- **CE location (provisional):** `p.sail.r = [-0.5, 0, -8]` m body (0.5 m **aft** of CG, 8 m above). The aft offset gives a weather-helm lever (`Mz = r_x F_y`); refine from Blender `ce.*` empties when sails-as-data lands.
+- **CE location (provisional):** `p.sail.r = [-0.25, 0, -8]` m body (0.25 m **aft** of CG, 8 m above). Mild weather-helm lever (`Mz = r_x F_y`); −0.5 m was enough to park free neutral-helm in irons before power-up. Refine from Blender `ce.*` later.
+- **Sail force model:** soft-cloth path separate from hydro foils — chord is **luff→leech** `(-cos φ, sin φ)` (aft–leeward), no chord flip, weathervane boom `φ* = sign(AWA)·(π−|AWA|)` clamped by sheet, aback/|α|>90° **flogs** to residual drag (prevents reverse-thrust lock-in that caused free-sail sternway).
 - **Sheet map:** `control.sail_trim` 0..1 → boom max angle **85° → 6°** via `sail_trim_to_sheet_rad` (trim=1 hard-sheeted ~6°, trim=0 fully eased ~85°). Weathervane clamp keeps `|boom| ≤ |AWA|`.
 
 ### 4.2 Cloth wrench channel (refinement path)

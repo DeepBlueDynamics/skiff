@@ -1,4 +1,4 @@
-use crate::core::{Vec2Mps, angle_diff_deg};
+use crate::core::{Vec2Mps, true_wind_angle_deg};
 use crate::env::boat_over_ground;
 
 use crate::boat::leeway::LeewayModel;
@@ -45,9 +45,8 @@ impl BoatProfile for CastOffProfile {
     fn predict(&self, input: BoatInput) -> BoatOutput {
         let tws_mps = input.wind_water_mps.magnitude();
         let wind_to_deg = input.wind_water_mps.to_deg();
-        // TWA is relative angle between bow heading and wind moving toward. This preserves the
-        // old Cast-Off spirit: wind course buckets are based on wind vector versus pointing vector.
-        let twa_deg = angle_diff_deg(input.heading_true_deg, wind_to_deg);
+        // TWA vs wind FROM (true_wind_angle_deg); course buckets use abs(TWA).
+        let twa_deg = true_wind_angle_deg(input.heading_true_deg, wind_to_deg);
         // Design: port/starboard symmetry via abs(TWA) is intentional for now
         // (see plan §4.7). Course buckets ignore tack side.
         let twa_abs = twa_deg.abs();

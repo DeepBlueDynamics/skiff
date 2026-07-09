@@ -1,4 +1,4 @@
-use crate::core::{Vec2Mps, angle_diff_deg, knots_to_mps, mps_to_knots};
+use crate::core::{Vec2Mps, knots_to_mps, mps_to_knots, true_wind_angle_deg};
 use crate::env::boat_over_ground;
 
 use crate::boat::leeway::LeewayModel;
@@ -24,7 +24,8 @@ impl BoatProfile for PolarProfile {
         let tws_mps = input.wind_water_mps.magnitude();
         let tws_knots = mps_to_knots(tws_mps);
         let wind_to_deg = input.wind_water_mps.to_deg();
-        let twa_deg = angle_diff_deg(input.heading_true_deg, wind_to_deg);
+        // TWA relative to wind FROM (not TO) — see true_wind_angle_deg.
+        let twa_deg = true_wind_angle_deg(input.heading_true_deg, wind_to_deg);
         // Design: port/starboard symmetry via abs(TWA) is intentional for now
         // (see plan §4.7). Asymmetric tables / leeway-signed polars are future work.
         let twa_abs = twa_deg.abs().min(180.0);

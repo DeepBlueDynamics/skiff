@@ -64,8 +64,11 @@ export function FlowVisualization() {
     // 1. Calculate Wind Flow Vector relative to the boat (Apparent Wind)
     const windSpeed = settings.windSpeedMps;
     const windAngleRad = degToRad(settings.windToDeg);
+    // TO-convention compass vector: east = sin, north = +cos. p.y IS northing —
+    // the render mapping (-p.y -> three Z) already handles the north/-Z flip,
+    // so negating cos here mirrors the flow across the E-W axis.
     const windVx = windSpeed * Math.sin(windAngleRad);
-    const windVy = -windSpeed * Math.cos(windAngleRad);
+    const windVy = windSpeed * Math.cos(windAngleRad);
 
     const windVx_rel = windVx - (boat.velocityGround?.x ?? 0);
     const windVy_rel = windVy - (boat.velocityGround?.y ?? 0);
@@ -75,7 +78,7 @@ export function FlowVisualization() {
     const currentSpeed = settings.currentSpeedMps;
     const currentAngleRad = degToRad(settings.currentToDeg);
     const currentVx = currentSpeed * Math.sin(currentAngleRad);
-    const currentVy = -currentSpeed * Math.cos(currentAngleRad);
+    const currentVy = currentSpeed * Math.cos(currentAngleRad);
 
     const currentVx_rel = currentVx - (boat.velocityWater?.x ?? 0);
     const currentVy_rel = currentVy - (boat.velocityWater?.y ?? 0);

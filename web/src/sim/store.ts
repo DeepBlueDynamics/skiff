@@ -47,6 +47,7 @@ export const useSimulator = create<SimulatorStore>((set) => ({
     spinnakerTackSlack: 1.05,
     spinnakerClewSlack: 1.0,
     luffPinned: true,
+    sheetSide: 'starboard',
     showForceArrows: true,
     pressureShading: true,
     showRigPoints: false,

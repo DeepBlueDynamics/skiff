@@ -52,9 +52,37 @@ pub fn angle_diff_deg(a_deg: f64, b_deg: f64) -> f64 {
     diff
 }
 
+/// True wind angle (deg): heading relative to the wind **from** direction.
+///
+/// `wind_to_deg` is the TO-convention flow direction of the true wind over water
+/// (`Vec2Mps::to_deg`). Meteorological / sailing TWA is relative to where the
+/// wind comes *from* (`wind_to + 180`). Matches SignalK `directionTrue` and
+/// `classify_course` head-to-wind buckets.
+pub fn true_wind_angle_deg(heading_true_deg: f64, wind_to_deg: f64) -> f64 {
+    let wind_from_deg = normalize_360(wind_to_deg + 180.0);
+    angle_diff_deg(heading_true_deg, wind_from_deg)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn true_wind_angle_head_to_wind_when_wind_from_ahead() {
+        // Heading north (0°). Wind TO 180° = blowing south = FROM north.
+        // Boat is head to wind → TWA = 0.
+        let twa = true_wind_angle_deg(0.0, 180.0);
+        assert!(
+            twa.abs() < 1e-9,
+            "heading 0, wind_to 180 (from north) must be head-to-wind TWA 0, got {twa}"
+        );
+        // Beam reach: wind FROM east (90) → wind TO 270. Heading 0 → TWA = −90.
+        let beam = true_wind_angle_deg(0.0, 270.0);
+        assert!(
+            (beam + 90.0).abs() < 1e-9,
+            "expected TWA -90 (stbd beam), got {beam}"
+        );
+    }
 
     #[test]
     fn bearing_cardinals_are_stable() {

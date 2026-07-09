@@ -330,6 +330,14 @@ export function ControlsPanel() {
           <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: 'var(--ink)' }}>
             <input
               type="checkbox"
+              checked={settings.sheetSide === 'starboard'}
+              onChange={(e) => setSetting('sheetSide', e.target.checked ? 'starboard' : 'port')}
+            />
+            Sheet stbd
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: 'var(--ink)' }}>
+            <input
+              type="checkbox"
               checked={settings.showForceArrows}
               onChange={(e) => setSetting('showForceArrows', e.target.checked)}
             />

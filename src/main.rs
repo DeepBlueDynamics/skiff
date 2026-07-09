@@ -14,7 +14,7 @@ use tower_http::services::ServeDir;
 use tracing_subscriber::EnvFilter;
 
 use skiff::boat::classify_course;
-use skiff::core::{LatLon, Vec2Mps, angle_diff_deg, move_latlon};
+use skiff::core::{LatLon, Vec2Mps, move_latlon, true_wind_angle_deg};
 use skiff::env::{
     ConstantEnvironment, EnvBatchRequest, EnvQueryPoint, EnvironmentProvider, HttpEnvironmentProvider,
     MetOcean, NutsAuthClient, test_env, wind_over_water,
@@ -75,7 +75,7 @@ pub struct FullSimState {
     pub heel_deg: f64,
     pub pitch_deg: f64,
     pub bob_m: f64,
-    /// True wind angle (deg): `angle_diff_deg(heading_true, wind_to)` over water.
+    /// True wind angle (deg): heading vs wind **from** over water (`true_wind_angle_deg`).
     pub twa_deg: f64,
     /// True wind speed (m/s) over water.
     pub tws_mps: f64,
@@ -380,11 +380,11 @@ async fn main() -> anyhow::Result<()> {
             state.aws_mps = aws;
             state.awa_deg = -awa_rad.to_degrees();
 
-            // True wind over water (plan §2.2)
+            // True wind over water (plan §2.2): TWA is relative to FROM, not TO.
             let wind_water = wind_over_water(&state.env);
             let wind_to_deg = wind_water.to_deg();
             state.tws_mps = wind_water.magnitude();
-            state.twa_deg = angle_diff_deg(state.heading_true_deg, wind_to_deg);
+            state.twa_deg = true_wind_angle_deg(state.heading_true_deg, wind_to_deg);
 
             let over_ground_vec = Vec2Mps { east: -ground_world[1], north: ground_world[0] };
             state.local_pos_m = state.local_pos_m + over_ground_vec * dt;

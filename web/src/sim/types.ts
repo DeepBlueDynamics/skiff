@@ -59,6 +59,7 @@ export type SimSettings = {
   spinnakerTackSlack: number;
   spinnakerClewSlack: number;
   luffPinned: boolean;
+  sheetSide: 'port' | 'starboard';
   showForceArrows: boolean;
   pressureShading: boolean;
   showRigPoints: boolean;
