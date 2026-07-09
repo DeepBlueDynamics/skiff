@@ -1,0 +1,11 @@
+# Keep Cloud Build uploads lean — the Dockerfile builds everything fresh.
+.git/
+target/
+web/node_modules/
+web/node_modules.broken-optional/
+web/dist/
+models/
+media/
+plan/
+mcp/
+*.zip

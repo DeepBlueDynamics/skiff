@@ -618,7 +618,12 @@ async fn main() -> anyhow::Result<()> {
         .layer(cors)
         .with_state(app_state);
 
-    let port = std::env::var("SKIFF_PORT").ok().and_then(|p| p.parse::<u16>().ok()).unwrap_or(18081);
+    // SKIFF_PORT wins locally; PORT is the Cloud Run contract; 18081 default.
+    let port = std::env::var("SKIFF_PORT")
+        .ok()
+        .or_else(|| std::env::var("PORT").ok())
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(18081);
     let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!("sailing-api server listening on {addr}");
