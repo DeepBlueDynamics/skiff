@@ -55,8 +55,6 @@ export type SimSettings = {
   gpsLon: number;
   autopilotEnabled: boolean;
   targetHeading: number;
-  spinnakerTackSlack: number;
-  spinnakerClewSlack: number;
   spinnakerEdgeTension: number;
   showRigPoints: boolean;
 };

@@ -114,6 +114,36 @@ pub fn gltf_vec_to_body(v_gltf: [f64; 3]) -> [f64; 3] {
     [v_gltf[2], v_gltf[0], -v_gltf[1]]
 }
 
+/// Position of the hull glTF model origin `(0,0,0)` in body coordinates, relative
+/// to the CG (body origin used by `apply_at` / all foil `r` vectors).
+///
+/// **Assumptions (Lagoon 450S interim):**
+/// - The exported hull glTF origin sits at the **waterline on centerline**.
+/// - Fore-aft and lateral offsets vs CG are ≈ 0 (not surveyed; document if refined).
+/// - Body frame has +Z **down**, CG is `cg_height` above the waterline, so the
+///   glTF origin is at body `z = +cg_height`. The numeric vertical matches
+///   [`lagoon_450s`] `cg_height` (0.86 m); update both together if VCG changes.
+///
+/// Cloth torques are summed about this point; backend shifts them to CG via
+/// [`cloth_wrench_to_cg`] before they enter generalized forces.
+pub const GLTF_ORIGIN_IN_BODY: [f64; 3] = [0.0, 0.0, 0.86];
+
+/// Convert a cloth wrench (force + torque about the glTF origin, already in body
+/// axes) into a 6-DOF wrench about the CG.
+///
+/// `τ_cg = τ_gltf + r_gltf_origin × f` with `r = GLTF_ORIGIN_IN_BODY`.
+pub fn cloth_wrench_to_cg(f_body: [f64; 3], tau_about_gltf: [f64; 3]) -> [f64; 6] {
+    let shift = cross(GLTF_ORIGIN_IN_BODY, f_body);
+    [
+        f_body[0],
+        f_body[1],
+        f_body[2],
+        tau_about_gltf[0] + shift[0],
+        tau_about_gltf[1] + shift[1],
+        tau_about_gltf[2] + shift[2],
+    ]
+}
+
 // Helper functions for vector math
 
 pub fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -230,7 +260,9 @@ fn foil_force_2d(inflow_xy: [f64; 2], chord_unit: [f64; 2], foil: &Foil, rho: f6
     [fx, fy, 0.0]
 }
 
-fn apply_at(force_body: [f64; 3], r: [f64; 3]) -> [f64; 6] {
+/// Apply a body-frame force at position `r` (body coords relative to CG).
+/// Returns the 6-DOF wrench `[F, r × F]` about the CG.
+pub fn apply_at(force_body: [f64; 3], r: [f64; 3]) -> [f64; 6] {
     let mut tau = [0.0; 6];
     tau[0] = force_body[0];
     tau[1] = force_body[1];
@@ -442,14 +474,9 @@ pub fn cat_forces(
         let coeff = coefficient_sail_wrench(st, p, ctrl, wind_body, ground_lin, omega);
         let sail_tau = if let Some(ov) = sail_override {
             let b = ov.blend.clamp(0.0, 1.0);
-            let ext = [
-                ov.f_body[0],
-                ov.f_body[1],
-                ov.f_body[2],
-                ov.tau_body[0],
-                ov.tau_body[1],
-                ov.tau_body[2],
-            ];
+            // Cloth τ is about glTF origin; shift to CG before blending with
+            // the coefficient sail (which is already about CG via apply_at).
+            let ext = cloth_wrench_to_cg(ov.f_body, ov.tau_body);
             let mut blended = [0.0; 6];
             for i in 0..6 {
                 blended[i] = b * ext[i] + (1.0 - b) * coeff[i];
@@ -811,5 +838,47 @@ mod tests {
         assert!((f_body[0] - 1.0).abs() < 1e-15);
         assert!((f_body[1] - 0.0).abs() < 1e-15);
         assert!((f_body[2] - 0.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn gltf_origin_vertical_matches_lagoon_cg_height() {
+        let p = lagoon_450s();
+        assert!(
+            (GLTF_ORIGIN_IN_BODY[2] - p.cg_height).abs() < 1e-15,
+            "GLTF_ORIGIN_IN_BODY.z must track lagoon_450s().cg_height"
+        );
+        assert_eq!(GLTF_ORIGIN_IN_BODY[0], 0.0);
+        assert_eq!(GLTF_ORIGIN_IN_BODY[1], 0.0);
+    }
+
+    #[test]
+    fn cloth_wrench_side_force_heel_matches_apply_at() {
+        // Pure side force at a known height above CG (body +Z down → r_z < 0).
+        let f = [0.0, 1500.0, 0.0];
+        let h_above_cg = 8.0;
+        let r_point = [0.0, 0.0, -h_above_cg];
+        let expected = apply_at(f, r_point);
+
+        // Frontend sums τ about glTF origin: τ_O = (r_point − r_O) × F.
+        let r_o = GLTF_ORIGIN_IN_BODY;
+        let r_from_o = [
+            r_point[0] - r_o[0],
+            r_point[1] - r_o[1],
+            r_point[2] - r_o[2],
+        ];
+        let tau_about_gltf = cross(r_from_o, f);
+        let through_wrench = cloth_wrench_to_cg(f, tau_about_gltf);
+
+        for i in 0..6 {
+            assert!(
+                (through_wrench[i] - expected[i]).abs() < 1e-12,
+                "wrench path component {i}: got {}, want {} (apply_at)",
+                through_wrench[i],
+                expected[i]
+            );
+        }
+        // Heel moment (body X) must be nonzero for a side force above CG.
+        assert!(expected[3].abs() > 1.0);
+        assert!((expected[3] - h_above_cg * f[1]).abs() < 1e-12);
     }
 }

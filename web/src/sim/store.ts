@@ -38,8 +38,6 @@ export const useSimulator = create<SimulatorStore>((set) => ({
     gpsLon: -80.0,
     autopilotEnabled: false,
     targetHeading: 20,
-    spinnakerTackSlack: 1.00,
-    spinnakerClewSlack: 0.75,
     spinnakerEdgeTension: 0.85,
     showRigPoints: false,
   },

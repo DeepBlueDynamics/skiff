@@ -217,11 +217,6 @@ export function SpinnakerSail() {
     
     let stepped = false;
     
-    // Accumulators for the wrench (averaged over simulated time)
-    const totalFrameForce = new THREE.Vector3();
-    const totalFrameTorque = new THREE.Vector3();
-    let stepCount = 0;
-
     const tmp = new THREE.Vector3();
     const tmp2 = new THREE.Vector3();
     const ab = new THREE.Vector3();
@@ -349,26 +344,17 @@ export function SpinnakerSail() {
         }
       }
 
-      totalFrameForce.add(totalStepForce.multiplyScalar(1 / SUBSTEPS));
-      totalFrameTorque.add(totalStepTorque.multiplyScalar(1 / SUBSTEPS));
-      stepCount++;
+      const avgStepForce = totalStepForce.multiplyScalar(1 / SUBSTEPS);
+      const avgStepTorque = totalStepTorque.multiplyScalar(1 / SUBSTEPS);
 
-      accumulator.current -= FRAME_TIME;
-      stepped = true;
-    }
-
-    if (stepped && stepCount > 0) {
-      const avgForce = totalFrameForce.multiplyScalar(1 / stepCount);
-      const avgTorque = totalFrameTorque.multiplyScalar(1 / stepCount);
-
-      // Low-pass EMA (cutoff frequency ~1.6Hz with 0.15s time constant)
+      // Low-pass EMA (cutoff frequency ~1.6Hz with 0.15s time constant) applied once per simulated step
       const EMA_TAU = 0.15; // seconds
       const emaAlpha = 1 - Math.exp(-FRAME_TIME / EMA_TAU);
-      filteredForce.current.lerp(avgForce, emaAlpha);
-      filteredTorque.current.lerp(avgTorque, emaAlpha);
+      filteredForce.current.lerp(avgStepForce, emaAlpha);
+      filteredTorque.current.lerp(avgStepTorque, emaAlpha);
 
-      // POST to backend at ~15 Hz
-      timeSinceLastPost.current += FRAME_TIME * stepCount;
+      // POST to backend at ~15 Hz in simulated time
+      timeSinceLastPost.current += FRAME_TIME;
       if (timeSinceLastPost.current >= 1 / 15) {
         timeSinceLastPost.current = 0;
         
@@ -393,6 +379,9 @@ export function SpinnakerSail() {
           // Fire-and-forget: stay silent on error/404
         });
       }
+
+      accumulator.current -= FRAME_TIME;
+      stepped = true;
     }
 
     // NaN guard: reset to the Blender rest shape

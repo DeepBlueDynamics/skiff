@@ -128,6 +128,8 @@ Average across substeps + low-pass (a few Hz), map through §2.1, and `POST /v1/
 
 Backend stores `(wrench, Instant)` in `AppState`. In the physics loop: if fresher than 500 ms, use it **instead of** the coefficient sail; otherwise decay smoothly back to the coefficient model — never hold a stale value, never drop to zero-force. Do not read PBD pin reactions — at quasi-steady state attachment reactions equal −(aero + gravity); the summed wrench is the solver-independent answer. Per-line tensions (halyard/sheet readouts) require XPBD later and are out of scope here.
 
+**Wrench reference point:** the frontend sums forces/torques about the **glTF hull origin** `(0,0,0)` (model origin; assumed waterline centerline). The backend expresses all generalized moments about the **body CG** (where foil `r` vectors are anchored). On ingest, the backend shifts: `τ_cg = τ_received + r_gltf_origin × f_body` with `r_gltf_origin = GLTF_ORIGIN_IN_BODY` in `cat_physics.rs` (`[0, 0, +cg_height]` under the waterline/CG assumptions above). The frontend stays dumb — no CG knowledge required.
+
 ### 4.3 Frontend cloth (visual)
 
 Current pattern is correct and stays: load the sail's **Blender-exported mesh as the cloth rest shape** (weld seam vertices → particles, mesh edges → springs, per-triangle wind pressure, Verlet + projection). Changes: attachment scheme per §2.4 (pin tack, drop both ropes and rope rendering), D4/D5/D6 fixes, wrench extraction (§4.2). Sliders: retire tack/clew slack; `spinnakerEdgeTension` remains as rest-length scale.
@@ -151,7 +153,7 @@ Two serialized HTTP round-trips per rendered frame is acceptable on localhost fo
 
 ## 5. Work packages
 
-Rules for every WP: Rust — `cargo test && cargo run --bin skiff` must start clean; Web — `cd web && npx tsc -b` must pass; a change that affects visuals requires `npm run build` + server restart to be visible on :18081. **No commits** (repo intentionally uncommitted). Don't touch `web/src/sim/boatPhysics.ts` except WP-D7. Update this file's §2/§3 if your change alters a contract.
+Rules for every WP: Rust — `cargo test && cargo run --bin skiff` must start clean; Web — `cd web && npx tsc -b` must pass; a change that affects visuals requires `npm run build` to be visible on :18081 (ServeDir reads `web/dist` per-request — no server restart needed; restart only when the Rust binary changes). **No commits** (repo intentionally uncommitted). Don't touch `web/src/sim/boatPhysics.ts` except WP-D7. Update this file's §2/§3 if your change alters a contract.
 
 | WP | Scope | Files | Depends on | Done when |
 |---|---|---|---|---|
