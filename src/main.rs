@@ -31,6 +31,15 @@ pub struct SimControlInput {
     pub thrust_port: f64, // -3000N to +3000N
     #[serde(default)]
     pub thrust_stbd: f64, // -3000N to +3000N
+    /// Displacement multiplier (1.0 = stock Lagoon 450S). Scales mass and the
+    /// rotational inertias together (loading the boat); hydrodynamic added
+    /// mass and hull geometry are unchanged.
+    #[serde(default = "default_mass_scale")]
+    pub mass_scale: f64,
+}
+
+fn default_mass_scale() -> f64 {
+    1.0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -212,6 +221,7 @@ fn create_initial_state() -> FullSimState {
             reef: 0.0,
             thrust_port: 0.0,
             thrust_stbd: 0.0,
+            mass_scale: 1.0,
         },
         env,
         trail: vec![Vec2Mps::ZERO],
@@ -340,7 +350,16 @@ async fn main() -> anyhow::Result<()> {
                 state.sail_blend = 0.0;
             }
 
-            let params = cat_physics::lagoon_450s();
+            let mut params = cat_physics::lagoon_450s();
+            // Mass slider: scale displacement + rotational inertias together
+            // (added mass / geometry stay — they're hull shape, not load).
+            let ms = state.control.mass_scale;
+            if ms.is_finite() && (0.25..=4.0).contains(&ms) && (ms - 1.0).abs() > 1e-9 {
+                params.mass *= ms;
+                params.ixx *= ms;
+                params.iyy *= ms;
+                params.izz *= ms;
+            }
 
             // Canonical wave field (shared with the slam check below and with
             // the frontend water surface — keep the three in lockstep):
@@ -614,7 +633,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/sim/position", post(post_position))
         .route("/v1/sim/reset", post(post_reset))
         .route("/v1/sim/sail_wrench", post(post_sail_wrench))
-        .fallback_service(ServeDir::new(static_dir))
+        // precompressed_gzip: serves foo.gz with Content-Encoding when present —
+        // the 42 MB hull GLB exceeds Cloud Run's 32 MB HTTP/1 response cap,
+        // but its .gz (27 MB) fits. Browsers always send Accept-Encoding: gzip.
+        .fallback_service(ServeDir::new(static_dir).precompressed_gzip())
         .layer(cors)
         .with_state(app_state);
 

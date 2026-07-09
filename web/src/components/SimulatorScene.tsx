@@ -271,6 +271,7 @@ function SimulationLoop({ controlsRef }: { controlsRef: React.RefObject<any> }) 
           reef: boat.mainDropped ? 1.0 : accumulated.current.reef,
           thrust_port: input.thrustPort,
           thrust_stbd: input.thrustStbd,
+          mass_scale: (settings.massScalePct ?? 100) / 100,
         }),
       });
 

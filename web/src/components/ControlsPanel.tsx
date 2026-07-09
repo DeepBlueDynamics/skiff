@@ -302,6 +302,19 @@ export function ControlsPanel() {
         </label>
       </ControlGroup>
 
+      <ControlGroup icon={<Sailboat size={16} />} title="Boat">
+        {/* Displacement multiplier — backend scales mass + rotational inertias */}
+        <Slider
+          label="Mass"
+          value={settings.massScalePct}
+          min={50}
+          max={250}
+          step={5}
+          unit="%"
+          onChange={(v) => setSetting('massScalePct', v)}
+        />
+      </ControlGroup>
+
       <ControlGroup icon={<Sailboat size={16} />} title="Sail Rig">
         <Slider
           label="Sheet"

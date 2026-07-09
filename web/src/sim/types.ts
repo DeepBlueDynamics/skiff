@@ -52,6 +52,8 @@ export type SimSettings = {
   waveHeightM: number;
   wavePeriodS: number;
   waveToDeg: number;
+  /** Boat displacement as % of stock (100 = as-built Lagoon 450S). */
+  massScalePct: number;
   showCurrent: boolean;
   showVectors: boolean;
   dataSource: 'real' | 'simulated';

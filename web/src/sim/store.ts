@@ -36,6 +36,7 @@ export const useSimulator = create<SimulatorStore>((set) => ({
     waveHeightM: 0.0,
     wavePeriodS: 7,
     waveToDeg: 290,
+    massScalePct: 100,
     showCurrent: true,
     showVectors: true,
     dataSource: 'simulated',
