@@ -28,7 +28,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 axum = "0.7"
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+# default-features = false drops default-tls (native-tls → openssl-sys), which
+# breaks the Linux container build; rustls covers TLS on every OS.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 geo = "0.28"
 geojson = "0.24"
 rstar = "0.12"
