@@ -540,6 +540,43 @@ Implementation sequence for the cloth/wrench track is expanded in [`plan/fixingt
 
 ---
 
+## MCP Bridge
+
+The simulator includes a Model Context Protocol (MCP) bridge, allowing AI agents to read telemetry and drive the catamaran.
+
+### Running the MCP Server
+
+You can run the MCP server using `uv`:
+
+```bash
+uv run mcp/skiff_mcp.py
+```
+
+### Adding to Claude Desktop
+
+To register the Skiff MCP bridge, add the following configuration to your client settings (or run via CLI):
+
+```json
+{
+  "mcpServers": {
+    "skiff": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--with",
+        "fastmcp",
+        "mcp/skiff_mcp.py"
+      ],
+      "env": {
+        "SKIFF_URL": "http://localhost:18081"
+      }
+    }
+  }
+}
+```
+
+---
+
 ## License
 
 MIT — see `Cargo.toml` package metadata.

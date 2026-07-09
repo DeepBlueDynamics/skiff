@@ -397,8 +397,36 @@ export function SpinnakerSail() {
     };
   }, []);
 
+  // Align the boat downwind BEFORE the cloth's first step — ONLY on a
+  // genuinely fresh sim (backend just booted). A remount (leaving the view
+  // and coming back) must never yank a running boat around.
+  const alignedReady = useRef(false);
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch('/v1/sim/state');
+        if (res.ok) {
+          const st = await res.json();
+          if ((st.elapsed_s ?? Infinity) < 10) {
+            const windTo = useSimulator.getState().settings.windToDeg ?? 150;
+            await fetch('/v1/sim/reset', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ heading_true_deg: windTo }),
+            });
+          }
+        }
+      } catch {
+        // backend unreachable — never block the cloth
+      } finally {
+        alignedReady.current = true;
+      }
+    })();
+  }, []);
+
   // Update physics at 60fps
   useFrame((state, delta) => {
+    if (!alignedReady.current) return;
     const { parts, springs, clothSpringCount, triangles, clothCount, weldMap, MASS, headI, tackI, clewI, luffNodes, tackRope, clewRope, geometry, sharedEdgesArray, sharedEdgeCount, collisionHead, collisionNext, neighborMatrix, triNormals } = sim;
 
     const currentSimState = useSimulator.getState();

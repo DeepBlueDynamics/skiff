@@ -330,7 +330,25 @@ async fn main() -> anyhow::Result<()> {
                 dt,
                 sail_override,
             );
-            state.cat_state = next_cat_state;
+            // Self-heal: if the integrator ever produces a non-finite state
+            // (poisoned input, numeric blowup), reset the boat instead of
+            // serializing NaN->null to every client forever. Env and control
+            // are preserved.
+            let finite = next_cat_state.eta.iter().chain(next_cat_state.nu.iter()).all(|v| v.is_finite());
+            if finite {
+                state.cat_state = next_cat_state;
+            } else {
+                tracing::error!("physics state went non-finite — auto-resetting boat (env/control preserved)");
+                let env_keep = state.env.clone();
+                let ctrl_keep = state.control.clone();
+                *state = create_initial_state();
+                state.env = env_keep;
+                state.control = ctrl_keep;
+                {
+                    let mut wrench = wrench_for_physics.write().unwrap();
+                    *wrench = None;
+                }
+            }
 
             // Extract telemetry values
             let eta = state.cat_state.eta;
@@ -590,20 +608,54 @@ async fn post_position(
     Json(current.clone())
 }
 
-async fn post_reset(State(state): State<AppState>) -> Json<FullSimState> {
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ResetInput {
+    /// Optional initial heading. The frontend aligns the boat downwind before
+    /// the cloth takes its first step so the sail paints in filled rather than
+    /// initializing mid-tangle.
+    pub heading_true_deg: Option<f64>,
+}
+
+async fn post_reset(
+    State(state): State<AppState>,
+    body: Option<Json<ResetInput>>,
+) -> Json<FullSimState> {
     {
         let mut wrench = state.sail_wrench.write().unwrap();
         *wrench = None;
     }
     let mut current = state.sim_state.write().unwrap();
     *current = create_initial_state();
+    if let Some(Json(input)) = body {
+        if let Some(h) = input.heading_true_deg {
+            let h = h.rem_euclid(360.0);
+            // heading_true_deg = (−ψ) mod 360 (documented convention, plan §2.1)
+            current.cat_state.eta[5] = -h.to_radians();
+            current.heading_true_deg = h;
+            current.cog_true_deg = h;
+        }
+    }
     Json(current.clone())
 }
+
+/// Sanity bounds for an incoming cloth wrench: anything non-finite or beyond
+/// these magnitudes is physically impossible for this rig and would blow up
+/// the integrator (no clamps exist downstream by design — validation happens
+/// at the boundary instead).
+const WRENCH_MAX_FORCE_N: f64 = 2.0e5;
+const WRENCH_MAX_TORQUE_NM: f64 = 2.0e6;
 
 async fn post_sail_wrench(
     State(state): State<AppState>,
     Json(req): Json<SailWrenchInput>,
 ) -> StatusCode {
+    let finite = req.f_body.iter().chain(req.tau_body.iter()).all(|v| v.is_finite());
+    let f_mag = (req.f_body[0].powi(2) + req.f_body[1].powi(2) + req.f_body[2].powi(2)).sqrt();
+    let t_mag = (req.tau_body[0].powi(2) + req.tau_body[1].powi(2) + req.tau_body[2].powi(2)).sqrt();
+    if !finite || f_mag > WRENCH_MAX_FORCE_N || t_mag > WRENCH_MAX_TORQUE_NM {
+        tracing::warn!(seq = req.seq, f_mag, t_mag, finite, "rejected insane sail wrench");
+        return StatusCode::UNPROCESSABLE_ENTITY;
+    }
     let mut wrench = state.sail_wrench.write().unwrap();
     *wrench = Some(StoredSailWrench {
         f_body: req.f_body,

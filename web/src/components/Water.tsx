@@ -69,6 +69,8 @@ export function Water() {
         metalness={0.1}
         transparent
         opacity={0.93} // Less transparent (previously 0.8)
+        depthWrite={false} // transparent surface must not occlude what's beneath —
+        // sub-surface particles draw after it (renderOrder) and blend through
         bumpMap={bumpTexture}
         bumpScale={0.02} // Very slight bump map depth
       />
