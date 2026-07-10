@@ -114,12 +114,17 @@ export function BoatModel() {
         if (child.name && child.name.toLowerCase().includes('sail')) {
           child.visible = false;
         }
-        // Orphaned Blender rope stubs that connect to nothing:
-        // Object.515 (stern rope tube), Object.113 (line off the starboard
-        // aft winch — identified by Kord).
+        // Hidden export leftovers: orphaned rope stubs (515, 113) and the
+        // arch clutter Kord culled (080/081 frame pieces, 056/024/076/025/103
+        // fittings) — replaced by the track copy added below.
         if (child.name) {
           const clean = child.name.replace(/[\._]/g, '').toLowerCase();
-          if (clean === 'object515' || clean === 'object113') {
+          const HIDDEN = new Set([
+            'object515', 'object113',
+            'object080', 'object056', 'object024', 'object076',
+            'object081', 'object025', 'object103',
+          ]);
+          if (HIDDEN.has(clean)) {
             child.visible = false;
           }
         }
@@ -153,6 +158,17 @@ export function BoatModel() {
     // plus the shackled mainsheet block riding it (Object.078).
     const travelerCar = findNode('object.104');
     const travelerShackle = findNode('object.078');
+
+    // Arch traveler track: copy of the Object.122 track placed at the
+    // midpoint of the culled Object.076/Object.103 fittings — centered on
+    // the arch, under the car's travel line.
+    const trackSrc = findNode('object.122');
+    if (trackSrc) {
+      const trackCopy = trackSrc.clone(true);
+      trackCopy.name = 'traveler.track.arch';
+      trackCopy.position.set(-0.001, 3.247, -4.358);
+      (trackSrc.parent ?? clone).add(trackCopy);
+    }
 
     // Mainsheet rope (Object.105): one baked mesh running car → boom blocks →
     // forward along the boom. The tackle section between the car and the boom
