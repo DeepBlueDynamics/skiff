@@ -219,7 +219,7 @@ export function Water() {
       meshRef.current.position.set(snapX, 0, snapZ);
     }
     if (farFieldRef.current) {
-      farFieldRef.current.position.set(snapX, -2.6, snapZ);
+      farFieldRef.current.position.set(snapX, -4, snapZ);
     }
 
     const clock = waveClock.current;
@@ -255,7 +255,7 @@ export function Water() {
       {/* Far-field ocean: the Gerstner plane is 1 km wide, but with land up to
           ~40 km away the camera sees past its edge. A huge flat quad below
           wave-trough depth carries the sea to the horizon. */}
-      <mesh ref={farFieldRef} rotation={[-Math.PI / 2, 0, 0]} position={[0, -2.6, 0]}>
+      <mesh ref={farFieldRef} rotation={[-Math.PI / 2, 0, 0]} position={[0, -4, 0]}>
         <planeGeometry args={[120000, 120000]} />
         <meshStandardMaterial color="#1c4a64" roughness={0.35} metalness={0.08} />
       </mesh>

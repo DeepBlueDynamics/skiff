@@ -28,8 +28,12 @@ export function SimulatorScene() {
   return (
     <Canvas
       shadows
-      camera={{ position: [9, 6.2, 10], fov: 45, near: 0.1, far: 45000 }}
-      gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping }}
+      camera={{ position: [9, 6.2, 10], fov: 45, near: 0.5, far: 45000 }}
+      // logarithmicDepthBuffer: with far=45km the standard depth buffer's
+      // precision at ~2km collapses below the wave-surface/far-field-quad
+      // separation and the water z-fights (severe flashing in the troughs).
+      // Log depth keeps precision ~uniform across the whole range.
+      gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping, logarithmicDepthBuffer: true }}
     >
       <color attach="background" args={['#8fb6c9']} />
       {/* Distance haze: blends the far-field sea + islands into the horizon */}
