@@ -66,6 +66,8 @@ export function BoatModel() {
   // Keep track of accumulated propeller angles to ensure smooth rotation
   const propPortAngle = useRef(0);
   const propStbdAngle = useRef(0);
+  // Last car offset applied to the mainsheet rope (skip rewrites when idle)
+  const lastRopeCarX = useRef(0);
 
   // Load the GLB file from the public directory
   const { scene } = useGLTF('/lagoon-450s.glb');
@@ -81,6 +83,8 @@ export function BoatModel() {
     sailJibNode,
     steeringWheelNode,
     travelerCarNode,
+    travelerShackleNode,
+    mainsheetRope,
     initialWheelQuaternion,
   } = useMemo(() => {
     const clone = scene.clone();
@@ -141,8 +145,38 @@ export function BoatModel() {
     const sailMain = findNode('sail.main');
     const sailJib = findNode('sail.jib');
     const steeringWheel = findNode('steering.wheel');
-    // Traveler car on the arch (Object.104, rest centered at x=0, y≈3.27).
+    // Traveler car on the arch (Object.104, rest centered at x=0, y≈3.27),
+    // plus the shackled mainsheet block riding it (Object.078).
     const travelerCar = findNode('object.104');
+    const travelerShackle = findNode('object.078');
+
+    // Mainsheet rope (Object.105): one baked mesh running car → boom blocks →
+    // forward along the boom. The tackle section between the car and the boom
+    // must follow the car athwartships while the boom run stays put, so bake
+    // the geometry into the boat frame once and shear tackle-zone vertices at
+    // runtime (weight falls off with height toward the boom sheaves and with
+    // distance forward of the traveler track).
+    let mainsheetRope: { attr: THREE.BufferAttribute; base: Float32Array } | null = null;
+    const ropeNode = findNode('object.105');
+    if (ropeNode) {
+      let ropeMesh: THREE.Mesh | null = null;
+      ropeNode.traverse((c) => {
+        if (c instanceof THREE.Mesh && !ropeMesh) ropeMesh = c;
+      });
+      if (ropeMesh) {
+        const rm = ropeMesh as THREE.Mesh;
+        clone.updateMatrixWorld(true);
+        const baked = rm.geometry.clone();
+        baked.applyMatrix4(rm.matrixWorld);
+        rm.geometry = baked;
+        rm.position.set(0, 0, 0);
+        rm.quaternion.identity();
+        rm.scale.set(1, 1, 1);
+        clone.add(rm); // reparent to root; transform now baked into vertices
+        const attr = baked.getAttribute('position') as THREE.BufferAttribute;
+        mainsheetRope = { attr, base: Float32Array.from(attr.array as Float32Array) };
+      }
+    }
  
     // Log the found nodes for debugging
     console.log('Catamaran rigged nodes lookup:', {
@@ -205,6 +239,8 @@ export function BoatModel() {
       sailJibNode: sailJib,
       steeringWheelNode: steeringWheel,
       travelerCarNode: travelerCar,
+      travelerShackleNode: travelerShackle,
+      mainsheetRope,
       initialWheelQuaternion
     };
   }, [scene]);
@@ -237,12 +273,31 @@ export function BoatModel() {
       steeringWheelNode.rotateOnAxis(AXIS_Y, degToRad(boat.rudderDeg * 10));
     }
 
-    // 2.6. Slide the traveler car (Object.104) along the arch track.
+    // 2.6. Slide the traveler assembly along the arch track.
     // glTF +X = PORT, so +traveler% (car to starboard) drives x negative.
-    if (travelerCarNode) {
+    {
       const pct = useSimulator.getState().settings.travelerPct ?? 0;
       const t = Math.max(-1, Math.min(1, pct / 100));
-      travelerCarNode.position.x = -t * TRAVELER_TRACK_HALF_M;
+      const carX = -t * TRAVELER_TRACK_HALF_M;
+      if (travelerCarNode) travelerCarNode.position.x = carX;
+      // The mainsheet block shackled onto the car (Object.078) rides along.
+      if (travelerShackleNode) travelerShackleNode.position.x = carX;
+      // Shear the mainsheet rope's tackle section toward the car. Weights:
+      // full at car height (y ≤ 3.45) fading to zero at the boom sheaves
+      // (y ≥ 4.65), and confined to the traveler zone (z ≤ −4 full, −3.4 off).
+      if (mainsheetRope && lastRopeCarX.current !== carX) {
+        lastRopeCarX.current = carX;
+        const { attr, base } = mainsheetRope;
+        const arr = attr.array as Float32Array;
+        for (let i = 0; i < arr.length; i += 3) {
+          const y = base[i + 1];
+          const z = base[i + 2];
+          const wy = Math.min(1, Math.max(0, (4.65 - y) / (4.65 - 3.45)));
+          const wz = Math.min(1, Math.max(0, (-3.4 - z) / 0.6));
+          arr[i] = base[i] + wy * wz * carX;
+        }
+        attr.needsUpdate = true;
+      }
     }
 
     // 3. Spin Propellers based on actual engine power/thrust (thrustPort & thrustStbd in Newtons)
