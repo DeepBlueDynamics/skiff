@@ -465,9 +465,9 @@ export function BoatModel() {
 }
 
 // Traveler car = Object.104 in the export (rest centered, on the arch track).
-// Travel trimmed 25% off the raw ±2.2 m throw per Kord (keeps the car on the
-// usable rail, off the end fittings).
-const TRAVELER_TRACK_HALF_M = 1.65;
+// Travel trimmed twice per Kord: raw ±2.2 m → ±1.65 → ±1.24 (each pass 25%
+// shorter outboard) to keep the car on the usable rail.
+const TRAVELER_TRACK_HALF_M = 1.24;
 const TILT_AXIS_Z = new THREE.Vector3(0, 0, 1);
 const _tiltQuat = new THREE.Quaternion();
 const _yawQuat = new THREE.Quaternion();
