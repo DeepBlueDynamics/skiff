@@ -80,6 +80,7 @@ export function BoatModel() {
     sailMainNode,
     sailJibNode,
     steeringWheelNode,
+    travelerCarNode,
     initialWheelQuaternion,
   } = useMemo(() => {
     const clone = scene.clone();
@@ -140,6 +141,8 @@ export function BoatModel() {
     const sailMain = findNode('sail.main');
     const sailJib = findNode('sail.jib');
     const steeringWheel = findNode('steering.wheel');
+    // Traveler car on the arch (Object.104, rest centered at x=0, y≈3.27).
+    const travelerCar = findNode('object.104');
  
     // Log the found nodes for debugging
     console.log('Catamaran rigged nodes lookup:', {
@@ -201,6 +204,7 @@ export function BoatModel() {
       sailMainNode: sailMain,
       sailJibNode: sailJib,
       steeringWheelNode: steeringWheel,
+      travelerCarNode: travelerCar,
       initialWheelQuaternion
     };
   }, [scene]);
@@ -231,6 +235,14 @@ export function BoatModel() {
     if (steeringWheelNode && initialWheelQuaternion) {
       steeringWheelNode.quaternion.copy(initialWheelQuaternion);
       steeringWheelNode.rotateOnAxis(AXIS_Y, degToRad(boat.rudderDeg * 10));
+    }
+
+    // 2.6. Slide the traveler car (Object.104) along the arch track.
+    // glTF +X = PORT, so +traveler% (car to starboard) drives x negative.
+    if (travelerCarNode) {
+      const pct = useSimulator.getState().settings.travelerPct ?? 0;
+      const t = Math.max(-1, Math.min(1, pct / 100));
+      travelerCarNode.position.x = -t * TRAVELER_TRACK_HALF_M;
     }
 
     // 3. Spin Propellers based on actual engine power/thrust (thrustPort & thrustStbd in Newtons)
@@ -299,43 +311,14 @@ export function BoatModel() {
       {/* 2. Asymmetric jib: Blender mesh as cloth-sim rest shape, tacked to the bowsprit ring */}
       <group rotation={[0, Math.PI, 0]}>
         <SpinnakerSail />
-        <TravelerCar />
       </group>
     </group>
   );
 }
 
-// Traveler car riding the real track (Object.122, ends ±2.459 at y 2.10,
-// z −4.03 in glTF coords). The car is merged into the 31k-vert track mesh in
-// the export, so we render our own and slide it with the Traveler slider.
-// This group lives inside the π-Y wrapper, so raw glTF coords apply:
-// +X = PORT, so +traveler (starboard car) drives x NEGATIVE.
-const TRAVELER_TRACK_HALF_M = 2.2; // keep the car visually on the track
-function TravelerCar() {
-  const carRef = useRef<THREE.Group>(null);
-
-  useFrame(() => {
-    if (!carRef.current) return;
-    const pct = useSimulator.getState().settings.travelerPct ?? 0;
-    const t = Math.max(-1, Math.min(1, pct / 100));
-    carRef.current.position.x = -t * TRAVELER_TRACK_HALF_M;
-  });
-
-  return (
-    <group ref={carRef} position={[0, 2.16, -4.03]}>
-      {/* car body */}
-      <mesh castShadow>
-        <boxGeometry args={[0.34, 0.1, 0.24]} />
-        <meshStandardMaterial color="#16181c" roughness={0.45} metalness={0.65} />
-      </mesh>
-      {/* sheave stack on top of the car */}
-      <mesh position={[0, 0.09, 0]} castShadow>
-        <cylinderGeometry args={[0.055, 0.055, 0.09, 16]} />
-        <meshStandardMaterial color="#2c3038" roughness={0.35} metalness={0.8} />
-      </mesh>
-    </group>
-  );
-}
+// Traveler car = Object.104 in the export (rest centered, on the arch track).
+// Slide range stays inside the ±2.46 m track ends.
+const TRAVELER_TRACK_HALF_M = 2.2;
 
 useGLTF.preload('/lagoon-450s.glb');
 useGLTF.preload('/sail-jib.glb');
