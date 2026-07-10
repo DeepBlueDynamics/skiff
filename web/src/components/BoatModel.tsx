@@ -109,6 +109,11 @@ export function BoatModel() {
         if (child.name && child.name.toLowerCase().includes('sail')) {
           child.visible = false;
         }
+        // Object.515: orphaned 1.3 m rope tube at the stern (old Blender
+        // line from the starboard aft winch that connects to nothing).
+        if (child.name && child.name.replace(/[\._]/g, '').toLowerCase() === 'object515') {
+          child.visible = false;
+        }
       }
     });
 
@@ -294,7 +299,40 @@ export function BoatModel() {
       {/* 2. Asymmetric jib: Blender mesh as cloth-sim rest shape, tacked to the bowsprit ring */}
       <group rotation={[0, Math.PI, 0]}>
         <SpinnakerSail />
+        <TravelerCar />
       </group>
+    </group>
+  );
+}
+
+// Traveler car riding the real track (Object.122, ends ±2.459 at y 2.10,
+// z −4.03 in glTF coords). The car is merged into the 31k-vert track mesh in
+// the export, so we render our own and slide it with the Traveler slider.
+// This group lives inside the π-Y wrapper, so raw glTF coords apply:
+// +X = PORT, so +traveler (starboard car) drives x NEGATIVE.
+const TRAVELER_TRACK_HALF_M = 2.2; // keep the car visually on the track
+function TravelerCar() {
+  const carRef = useRef<THREE.Group>(null);
+
+  useFrame(() => {
+    if (!carRef.current) return;
+    const pct = useSimulator.getState().settings.travelerPct ?? 0;
+    const t = Math.max(-1, Math.min(1, pct / 100));
+    carRef.current.position.x = -t * TRAVELER_TRACK_HALF_M;
+  });
+
+  return (
+    <group ref={carRef} position={[0, 2.16, -4.03]}>
+      {/* car body */}
+      <mesh castShadow>
+        <boxGeometry args={[0.34, 0.1, 0.24]} />
+        <meshStandardMaterial color="#16181c" roughness={0.45} metalness={0.65} />
+      </mesh>
+      {/* sheave stack on top of the car */}
+      <mesh position={[0, 0.09, 0]} castShadow>
+        <cylinderGeometry args={[0.055, 0.055, 0.09, 16]} />
+        <meshStandardMaterial color="#2c3038" roughness={0.35} metalness={0.8} />
+      </mesh>
     </group>
   );
 }
