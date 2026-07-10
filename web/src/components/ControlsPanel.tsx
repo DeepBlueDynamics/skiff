@@ -274,6 +274,20 @@ export function ControlsPanel() {
           </ControlGroup>
         </>
       )}
+      <div className="toggle-row">
+        <label>
+          <input type="checkbox" checked={settings.showVectors} onChange={(e) => setSetting('showVectors', e.target.checked)} />
+          Vectors
+        </label>
+        <label>
+          <input type="checkbox" checked={settings.showCurrent} onChange={(e) => setSetting('showCurrent', e.target.checked)} />
+          Current
+        </label>
+        <label>
+          <input type="checkbox" checked={settings.showForceArrows} onChange={(e) => setSetting('showForceArrows', e.target.checked)} />
+          Force arrows
+        </label>
+      </div>
       </Section>
 
       <Section title="Boat" icon={<Sailboat size={15} />} storageKey="skiff.section.boat">
@@ -391,14 +405,6 @@ export function ControlsPanel() {
           <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: 'var(--ink)' }}>
             <input
               type="checkbox"
-              checked={settings.showForceArrows}
-              onChange={(e) => setSetting('showForceArrows', e.target.checked)}
-            />
-            Force arrows
-          </label>
-          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: 'var(--ink)' }}>
-            <input
-              type="checkbox"
               checked={settings.pressureShading}
               onChange={(e) => setSetting('pressureShading', e.target.checked)}
             />
@@ -408,16 +414,6 @@ export function ControlsPanel() {
 
         {/* Sail Form + Aerodynamic Wrench moved to SailTelemetryPanel (bottom-left, collapsible) */}
       </ControlGroup>
-      <div className="toggle-row">
-        <label>
-          <input type="checkbox" checked={settings.showVectors} onChange={(e) => setSetting('showVectors', e.target.checked)} />
-          Vectors
-        </label>
-        <label>
-          <input type="checkbox" checked={settings.showCurrent} onChange={(e) => setSetting('showCurrent', e.target.checked)} />
-          Current
-        </label>
-      </div>
       </Section>
 
       <Section title="Engines / Autopilot" icon={<Gauge size={15} />} storageKey="skiff.section.engines">
