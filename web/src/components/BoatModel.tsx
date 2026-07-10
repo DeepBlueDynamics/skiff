@@ -162,15 +162,33 @@ export function BoatModel() {
     const travelerCar = findNode('object.104');
     const travelerShackle = findNode('object.078');
 
-    // Arch traveler track: copy of the Object.122 track placed at the
-    // midpoint of the culled Object.076/Object.103 fittings — centered on
-    // the arch, under the car's travel line.
-    const trackSrc = findNode('object.122');
-    if (trackSrc) {
-      const trackCopy = trackSrc.clone(true);
-      trackCopy.name = 'traveler.track.arch';
-      trackCopy.position.set(-0.001, 3.247, -4.358);
-      (trackSrc.parent ?? clone).add(trackCopy);
+    // Arch winch: Object.122 is a PAIR of winches — split it and mount ONE
+    // copy on the arch at the 076/103 midpoint. (The original pair stays
+    // where it is on deck.)
+    {
+      const winchSrc = findNode('object.122');
+      let winchMesh: THREE.Mesh | null = null;
+      winchSrc?.traverse((c) => {
+        if (c instanceof THREE.Mesh && !winchMesh) winchMesh = c;
+      });
+      if (winchMesh) {
+        const wm = winchMesh as THREE.Mesh;
+        clone.updateMatrixWorld(true);
+        const baked = wm.geometry.clone();
+        baked.applyMatrix4(wm.matrixWorld);
+        const islands = splitConnectedComponents(baked, 4);
+        if (islands.length > 0) {
+          const winch = islands[0]; // largest island = one winch
+          winch.computeBoundingBox();
+          const bb = winch.boundingBox!;
+          winch.translate(-(bb.min.x + bb.max.x) / 2, -bb.min.y, -(bb.min.z + bb.max.z) / 2);
+          const m = new THREE.Mesh(winch, wm.material);
+          m.castShadow = true;
+          m.name = 'winch.arch';
+          m.position.set(-0.001, 3.247, -4.358);
+          clone.add(m);
+        }
+      }
     }
 
     // Object.076's fittings, separated into connected components and
@@ -350,16 +368,18 @@ export function BoatModel() {
         travelerShackleNode.position.x = carX;
         travelerShackleNode.position.y = travelerShackleRestY + sag;
       }
-      // Separated Object.076 fittings: each swivels on its bottom pivot,
-      // riding the car and yawing toward the mainsheet's upper sheave.
+      // Separated Object.076 fittings (shackle + ring): each swivels on its
+      // bottom pivot, mounted ON the car (same z), yawing toward the load.
       if (travelerSwivels.length > 0) {
         const n = travelerSwivels.length;
         for (let i = 0; i < n; i++) {
           const sv = travelerSwivels[i];
           const side = (i - (n - 1) / 2) * 0.12;
-          sv.position.set(carX + side, 3.247 + sag, -4.358);
-          // Vertical-axis swivel: aim at the boom sheave overhead-centerline.
-          sv.rotation.y = Math.atan2(0 - (carX + side), -4.69 - -4.358);
+          const x = carX + side;
+          sv.position.set(x, travelerCarRestY + 0.035 + sag, -4.689);
+          // Vertical-axis swivel: face the mainsheet pull (upper sheave,
+          // centerline just forward of the car).
+          sv.rotation.y = Math.atan2(-x, 0.09);
         }
       }
       // Shear the mainsheet rope's tackle section toward the car. Weights:
@@ -454,8 +474,10 @@ export function BoatModel() {
 // Traveler car = Object.104 in the export (rest centered, on the arch track).
 // Slide range stays inside the ±2.46 m track ends.
 const TRAVELER_TRACK_HALF_M = 2.2;
-// Arch-top camber measured from Object.095: y(x) = y0 − 0.0108·x² (m).
-const ARCH_SAG_PER_X2 = -0.0108;
+// Arch-top camber measured across the FULL arch (Object.003 + neighbors,
+// 8.7k surface points): y(x) = y0 − 0.0265·x² — 13 cm of drop at the track
+// ends. (First fit used only the small Object.095 segment and undershot.)
+const ARCH_SAG_PER_X2 = -0.0265;
 
 /// Split a (baked, world-space) geometry into its connected mesh islands.
 /// Vertices are welded by quantized position for connectivity only; each
