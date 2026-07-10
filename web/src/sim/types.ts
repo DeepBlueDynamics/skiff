@@ -75,6 +75,8 @@ export type SimSettings = {
   sheetSide: 'port' | 'starboard';
   /** Which headsail is bent on. The current cloth mesh is the code zero. */
   headsailType: 'codezero';
+  /** Boom vang tension (%): 100 = bar-taut mainsheet line, 0 = slack sag. */
+  vangPct: number;
   /** Full-throttle fuel burn per engine (L/h) for the consumption estimate. */
   fuelBurnMaxLph: number;
   showForceArrows: boolean;

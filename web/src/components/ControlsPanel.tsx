@@ -296,6 +296,7 @@ export function ControlsPanel() {
         {/* Traveler car: negative = port, positive = starboard; rotates the
             boom up to ±22° (track geometry, Object.122 ends ±2.46 m) */}
         <Slider label="Traveler" value={settings.travelerPct} min={-100} max={100} step={5} unit="%" onChange={(v) => setSetting('travelerPct', v)} />
+        <Slider label="Vang" value={settings.vangPct} min={0} max={100} step={5} unit="%" onChange={(v) => setSetting('vangPct', v)} />
         <Slider label="Reef" value={boat.reef} min={0} max={1} step={0.01} unit="" onChange={(v) => setBoat({ ...boat, reef: v })} />
         <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', marginTop: '6px', color: 'var(--ink)' }}>
           <input

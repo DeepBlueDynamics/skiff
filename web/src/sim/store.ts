@@ -52,6 +52,7 @@ export const useSimulator = create<SimulatorStore>((set) => ({
     luffPinned: true,
     sheetSide: 'starboard',
     headsailType: 'codezero',
+    vangPct: 60,
     fuelBurnMaxLph: 9, // Yanmar 4JH45 ballpark at WOT
 
     showForceArrows: true,

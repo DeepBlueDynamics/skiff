@@ -83,6 +83,9 @@ export function BoatModel() {
     travelerCarNode,
     travelerCarRestY,
     travelerCarQuat,
+    travelerShackleMesh,
+    boomShackleNode,
+    boomShackleQuat,
     mainsheetLine,
     initialWheelQuaternion,
   } = useMemo(() => {
@@ -160,8 +163,9 @@ export function BoatModel() {
     const travelerCar = findNode('object.104');
 
     // Object.078 is the PAIR of mainsheet shackles merged into one mesh
-    // (original hidden above). Split it and mount ONE shackle centered on
-    // the car line — STATIC for now per Kord (no pivot/follow logic yet).
+    // (original hidden above). Split it, mount ONE shackle riding the
+    // traveler car; it swivels toward the sheet force (see useFrame).
+    let travelerShackleMesh: THREE.Mesh | null = null;
     {
       const shackleSrc = findNode('object.078');
       let shackleMesh: THREE.Mesh | null = null;
@@ -183,11 +187,15 @@ export function BoatModel() {
           m.castShadow = true;
           m.name = 'shackle.traveler';
           m.position.set(0, 3.29, -4.692);
-          m.visible = true;
           clone.add(m);
+          travelerShackleMesh = m;
         }
       }
     }
+
+    // Boom-end shackle/block (Object.077): swivels with the sheet force too.
+    const boomShackle = findNode('object.077');
+    const boomShackleQuat = boomShackle ? boomShackle.quaternion.clone() : new THREE.Quaternion();
 
     // Arch winch: Object.122 is a PAIR of winches — split it and mount ONE
     // copy on the arch at the 076/103 midpoint. (The original pair stays
@@ -293,6 +301,9 @@ export function BoatModel() {
       travelerCarNode: travelerCar,
       travelerCarRestY: travelerCar ? travelerCar.position.y : 3.273,
       travelerCarQuat,
+      travelerShackleMesh,
+      boomShackleNode: boomShackle,
+      boomShackleQuat,
       mainsheetLine,
       initialWheelQuaternion
     };
@@ -345,19 +356,45 @@ export function BoatModel() {
         travelerCarNode.position.y = travelerCarRestY + sag;
         travelerCarNode.quaternion.copy(_tiltQuat).multiply(travelerCarQuat);
       }
-      // (Shackle/ring swivel logic removed per Kord — the single 078-derived
-      // shackle sits static mid-track; no animation on it yet.)
-      // Live mainsheet line: tied to Object.077's block (0, 4.34, −4.73) at
-      // the top, following the traveler car at the bottom.
-      if (mainsheetLine) {
-        const topX = -0.002, topY = 4.34, topZ = -4.731;
-        const botX = carX, botY = travelerCarRestY + 0.09 + sag, botZ = -4.689;
-        const dx = topX - botX, dy = topY - botY, dz = topZ - botZ;
-        const len = Math.max(0.05, Math.hypot(dx, dy, dz));
-        mainsheetLine.position.set((topX + botX) / 2, (topY + botY) / 2, (topZ + botZ) / 2);
-        mainsheetLine.scale.set(1, len, 1);
-        _ropeDir.set(dx / len, dy / len, dz / len);
-        mainsheetLine.quaternion.setFromUnitVectors(AXIS_Y_LOCAL, _ropeDir);
+      // Mainsheet linkage: line tied at Object.077's block, other end on the
+      // traveler shackle riding the car. Vang slider sets tension: slack
+      // line sags (quadratic bow), taut line straightens. Both shackles
+      // SWIVEL to align with the local line direction (the force between
+      // them).
+      {
+        const vang = Math.min(1, Math.max(0, (useSimulator.getState().settings.vangPct ?? 60) / 100));
+        _topP.set(-0.002, 4.34, -4.731);
+        _botP.set(carX, travelerCarRestY + 0.1 + sag, -4.689);
+        const len = Math.max(0.05, _topP.distanceTo(_botP));
+        // Sag control point: midway, dropped by slack amount.
+        _midP.copy(_topP).add(_botP).multiplyScalar(0.5);
+        _midP.y -= (1 - vang) * 0.22 * len;
+
+        // Traveler shackle: ride the car, tip with the rail, swivel up-line.
+        if (travelerShackleMesh) {
+          travelerShackleMesh.position.set(carX, travelerCarRestY + 0.035 + sag, -4.689);
+          _ropeDir.copy(_midP).sub(_botP).normalize();
+          travelerShackleMesh.quaternion.setFromUnitVectors(AXIS_Y_LOCAL, _ropeDir);
+        }
+        // Boom shackle (077): swivel down-line on top of its authored pose.
+        if (boomShackleNode) {
+          _ropeDir.copy(_midP).sub(_topP).normalize();
+          _downDir.set(0, -1, 0);
+          _swivelQuat.setFromUnitVectors(_downDir, _ropeDir);
+          boomShackleNode.quaternion.copy(_swivelQuat).multiply(boomShackleQuat);
+        }
+        // Line as a sagging tube along the bezier top→mid→bottom.
+        if (mainsheetLine) {
+          _sheetCurve.v0.copy(_topP);
+          _sheetCurve.v1.copy(_midP);
+          _sheetCurve.v2.copy(_botP);
+          const oldGeo = mainsheetLine.geometry;
+          mainsheetLine.geometry = new THREE.TubeGeometry(_sheetCurve, 16, 0.012, 6, false);
+          oldGeo.dispose();
+          mainsheetLine.position.set(0, 0, 0);
+          mainsheetLine.scale.set(1, 1, 1);
+          mainsheetLine.quaternion.identity();
+        }
       }
     }
 
@@ -441,6 +478,16 @@ const _tiltQuat = new THREE.Quaternion();
 const _yawQuat = new THREE.Quaternion();
 const AXIS_Y_LOCAL = new THREE.Vector3(0, 1, 0);
 const _ropeDir = new THREE.Vector3();
+const _topP = new THREE.Vector3();
+const _botP = new THREE.Vector3();
+const _midP = new THREE.Vector3();
+const _downDir = new THREE.Vector3();
+const _swivelQuat = new THREE.Quaternion();
+const _sheetCurve = new THREE.QuadraticBezierCurve3(
+  new THREE.Vector3(),
+  new THREE.Vector3(),
+  new THREE.Vector3()
+);
 // Arch-top camber measured across the FULL arch (Object.003 + neighbors,
 // 8.7k surface points): y(x) = y0 − 0.0265·x² — 13 cm of drop at the track
 // ends. (First fit used only the small Object.095 segment and undershot.)
