@@ -47,7 +47,7 @@ export function Vectors() {
         directionDeg={vectorToDeg(windWater)}
         length={Math.max(2.5, vectorMagnitude(windWater) * 0.55)}
         color="#38bdf8"
-        y={4.25}
+        y={4.5}
         label="Wind over water"
         value={`${(vectorMagnitude(windWater) * MPS_TO_KNOT).toFixed(1)} kt → ${vectorToDeg(windWater).toFixed(0)}°`}
       />
@@ -56,7 +56,7 @@ export function Vectors() {
           directionDeg={settings.currentToDeg}
           length={Math.max(1.5, settings.currentSpeedMps * 3.5)}
           color="#6ee7b7"
-          y={4.5}
+          y={4.25}
           label="Current set"
           value={`${(settings.currentSpeedMps * MPS_TO_KNOT).toFixed(1)} kt → ${settings.currentToDeg.toFixed(0)}°`}
         />

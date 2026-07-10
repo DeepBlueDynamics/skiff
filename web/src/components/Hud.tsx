@@ -18,8 +18,8 @@ export function Hud() {
       <Metric icon={<Gauge size={17} />} label="SOG" value={`${(boat.sogMps * MPS_TO_KNOT).toFixed(1)} kt`} />
       <Metric icon={<Wind size={17} />} label="TWS" value={`${(boat.twsMps * MPS_TO_KNOT).toFixed(1)} kt`} />
       <Metric icon={<Wind size={17} />} label="TWA" value={`${boat.twaDeg.toFixed(0)}°`} />
-      <Metric icon={<Anchor size={17} />} label="Current" value={`${(vectorMagnitude(current) * MPS_TO_KNOT).toFixed(1)} kt @ ${settings.currentToDeg.toFixed(0)}°`} />
       <Metric icon={<Wind size={17} />} label="Wind water" value={`${(vectorMagnitude(windWater) * MPS_TO_KNOT).toFixed(1)} kt @ ${vectorToDeg(windWater).toFixed(0)}°`} />
+      <Metric icon={<Anchor size={17} />} label="Current" value={`${(vectorMagnitude(current) * MPS_TO_KNOT).toFixed(1)} kt @ ${settings.currentToDeg.toFixed(0)}°`} />
       <Metric icon={<Gauge size={17} />} label="Heel" value={`${(boat.heelDeg ?? 0).toFixed(1)}°`} />
       <Metric icon={<Gauge size={17} />} label="Pitch" value={`${(boat.pitchDeg ?? 0).toFixed(1)}°`} />
       <Metric icon={<Gauge size={17} />} label="Port Eng" value={`${(boat.thrustPort ?? 0).toFixed(0)} N`} />
