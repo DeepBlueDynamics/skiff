@@ -152,7 +152,16 @@ pub struct FullSimState {
     pub fuel_port_l: f64,
     #[serde(default = "default_tank")]
     pub fuel_stbd_l: f64,
+    /// Water depth from the bathymetry grid (m, positive down). None = no data.
+    #[serde(default)]
+    pub depth_m: Option<f64>,
+    /// Depth over keel: depth − draft (Lagoon 450S draft 1.3 m).
+    #[serde(default)]
+    pub depth_over_keel_m: Option<f64>,
 }
+
+/// Lagoon 450S draft (m).
+pub const DRAFT_M: f64 = 1.3;
 
 /// Lagoon 450 tank capacity per side (liters).
 pub const TANK_CAPACITY_L: f64 = 275.0;
@@ -284,6 +293,8 @@ fn create_initial_state() -> FullSimState {
         env_live: false,
         fuel_port_l: TANK_CAPACITY_L,
         fuel_stbd_l: TANK_CAPACITY_L,
+        depth_m: None,
+        depth_over_keel_m: None,
     }
 }
 
@@ -397,6 +408,11 @@ async fn main() -> anyhow::Result<()> {
     // Grenada land mask (grounding). None = open-ocean behavior everywhere.
     let land_mask = std::sync::Arc::new(skiff::world::LandMask::load());
     let land_mask_physics = land_mask.clone();
+    // Open bathymetry (GMRT) — depth sounder. Grounding stays coastline-based:
+    // the grid's ~120 m cells swallow narrow harbors, so depth-based grounding
+    // would strand the boat in its own anchorage.
+    let bathy = std::sync::Arc::new(skiff::world::BathyGrid::load());
+    let bathy_physics = bathy.clone();
     tokio::spawn(async move {
         let mut last_tick = tokio::time::Instant::now();
         loop {
@@ -637,6 +653,15 @@ async fn main() -> anyhow::Result<()> {
                 state.pos = next_pos;
             }
 
+            // Depth sounder (throttled: every 10th tick ≈ 0.5 s — the spiral
+            // rescue near harbors costs a few hundred cell reads).
+            if (state.elapsed_s * 20.0) as u64 % 10 == 0 {
+                if let Some(grid) = bathy_physics.as_ref() {
+                    state.depth_m = grid.depth_m(state.pos.lat_deg, state.pos.lon_deg);
+                    state.depth_over_keel_m = state.depth_m.map(|d| (d - DRAFT_M).max(0.0));
+                }
+            }
+
             let local_pos = state.local_pos_m;
             let last_trail = state.trail.last().copied().unwrap_or(Vec2Mps::ZERO);
             if state.trail.is_empty() || (last_trail - local_pos).magnitude() > 5.0 {
@@ -680,7 +705,7 @@ async fn main() -> anyhow::Result<()> {
                 let wind_from_true_rad =
                     (wind_water.to_deg() + 180.0).rem_euclid(360.0).to_radians();
 
-                let delta = SignalKDelta {
+                let mut delta = SignalKDelta {
                     context: "vessels.self".to_string(),
                     updates: vec![SignalKUpdate {
                         source: SignalKSource {
@@ -740,6 +765,19 @@ async fn main() -> anyhow::Result<()> {
                         ],
                     }],
                 };
+                // Depth sounder paths, only when the bathy grid has data here.
+                if let Some(d) = data.depth_m {
+                    delta.updates[0].values.push(SignalKPathValue {
+                        path: "environment.depth.belowSurface".to_string(),
+                        value: serde_json::json!(d),
+                    });
+                }
+                if let Some(dok) = data.depth_over_keel_m {
+                    delta.updates[0].values.push(SignalKPathValue {
+                        path: "environment.depth.belowKeel".to_string(),
+                        value: serde_json::json!(dok),
+                    });
+                }
 
                 if let Err(e) = sk.send_delta(&delta).await {
                     tracing::error!("Failed to stream delta updates to Signal K: {e}");

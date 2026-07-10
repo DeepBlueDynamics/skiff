@@ -14,7 +14,9 @@ workstation; every command is copy-pasteable from Git Bash.
 | Deploy dir on Pi | `/home/pi/skiff` |
 | Skiff service | `skiff.service`, port `18081`, binds `0.0.0.0` |
 | Signal K | `signalk.service`, already enabled; UI/REST `:3000`, TCP `:8375`, NMEA0183 `:10110` |
-| Skiff → Signal K | `SIGNALK_HOST=http://127.0.0.1:3000` env var; skiff streams deltas over WebSocket to `/signalk/v1/stream?subscribe=none` (HTTP POST to `/signalk/v1/api/` does **not** exist in signalk-server — returns 404) |
+| Skiff → Signal K | `SIGNALK_HOST=localhost:3000` env var; skiff streams deltas over WebSocket to `/signalk/v1/stream?subscribe=none` (HTTP POST to `/signalk/v1/api/` does **not** exist in signalk-server — returns 404) |
+| MCP | native in the binary: streamable-HTTP, stateless, `POST /mcp` on the main port. Register: `claude mcp add skiff --transport http http://192.168.68.29:18081/mcp`. Tools: `get_state`, `set_control`, `set_environment`, `set_position`, `reset`, `refuel` |
+| Contract | `plan/pi_backend_contract.md` — runtime layout, env table, build flags. Read it before changing this runbook. |
 | Pi toolchain | Node v24 preinstalled; Rust installed via rustup (step 1) |
 
 Source of truth is the **local working tree** at
@@ -82,7 +84,7 @@ Group=pi
 WorkingDirectory=/home/pi/skiff
 ExecStart=/home/pi/skiff/target/release/skiff
 Environment=SKIFF_PORT=18081
-Environment=SIGNALK_HOST=http://127.0.0.1:3000
+Environment=SIGNALK_HOST=localhost:3000
 Environment=RUST_LOG=info
 Restart=on-failure
 RestartSec=5
@@ -104,14 +106,26 @@ ssh skiff-pi 'systemctl is-active skiff'                      # → active
 # API answers (from workstation, over LAN)
 curl -s http://192.168.68.29:18081/v1/sim/state | head -c 300 # → JSON sim state
 # web UI: open http://192.168.68.29:18081 in a browser
-# Signal K is receiving skiff deltas:
-curl -s http://192.168.68.29:3000/signalk/v1/api/vessels/self | head -c 500
-# → should contain navigation/environment paths sourced from skiff
-# no delta errors in the log:
+# Signal K is receiving skiff deltas (contract check — live value within
+# seconds of skiff starting, $source "sailing-simulator"):
+curl -s http://192.168.68.29:3000/signalk/v1/api/vessels/self/navigation/speedThroughWater
+# MCP endpoint answers:
+curl -s -X POST http://192.168.68.29:18081/mcp \
+  -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"verify","version":"0"}}}'
+# → serverInfo "skiff-mcp" JSON. Register it for an agent with:
+#   claude mcp add skiff --transport http http://192.168.68.29:18081/mcp
+# skiff log shows "SignalK connected: ws://..." and no delta errors:
 ssh skiff-pi 'journalctl -u skiff -n 30 --no-pager'
 ```
 
 ## 6. Redeploy (code change)
+
+Pull/merge latest first — the working tree is what ships. If the change
+deletes or renames files, remove the stale copies on the Pi before
+extracting (tar only adds/overwrites): `ssh skiff-pi 'rm -rf ~/skiff/src'`
+(cheap, fully re-shipped; do NOT blanket-delete `~/skiff/web` — it holds
+`node_modules` and `dist`).
 
 ```bash
 cd /c/Users/kordl/Code/DeepBlueDynamics/skiff

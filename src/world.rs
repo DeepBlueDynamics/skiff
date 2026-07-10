@@ -141,6 +141,111 @@ impl LandMask {
     }
 }
 
+/// Open bathymetry (GMRT GridServer, conservative shallowest-in-block bake;
+/// see web/public/world/grenada_bathy.json for provenance). Row 0 = north.
+/// Values are ELEVATION in metres (negative = water depth), i16, 32767 = void.
+pub struct BathyGrid {
+    ncols: usize,
+    nrows: usize,
+    west: f64,
+    south: f64,
+    cellsize: f64,
+    data: Vec<i16>,
+}
+
+impl BathyGrid {
+    pub fn load() -> Option<BathyGrid> {
+        const CANDIDATES: [(&str, &str); 2] = [
+            (
+                "web/dist/world/grenada_bathy.json",
+                "web/dist/world/grenada_bathy.bin",
+            ),
+            (
+                "web/public/world/grenada_bathy.json",
+                "web/public/world/grenada_bathy.bin",
+            ),
+        ];
+        for (meta_path, bin_path) in CANDIDATES {
+            let (Ok(meta_text), Ok(bin)) = (fs::read_to_string(meta_path), fs::read(bin_path))
+            else {
+                continue;
+            };
+            let Ok(meta) = serde_json::from_str::<serde_json::Value>(&meta_text) else {
+                continue;
+            };
+            let ncols = meta["ncols"].as_u64().unwrap_or(0) as usize;
+            let nrows = meta["nrows"].as_u64().unwrap_or(0) as usize;
+            if ncols * nrows * 2 != bin.len() {
+                tracing::warn!(meta_path, "bathy bin size mismatch");
+                continue;
+            }
+            let data: Vec<i16> = bin
+                .chunks_exact(2)
+                .map(|c| i16::from_le_bytes([c[0], c[1]]))
+                .collect();
+            let grid = BathyGrid {
+                ncols,
+                nrows,
+                west: meta["west"].as_f64().unwrap_or(0.0),
+                south: meta["south"].as_f64().unwrap_or(0.0),
+                cellsize: meta["cellsize"].as_f64().unwrap_or(1.0),
+                data,
+            };
+            tracing::info!(
+                meta_path,
+                ncols,
+                nrows,
+                "bathymetry loaded (depth sounder enabled)"
+            );
+            return Some(grid);
+        }
+        tracing::warn!("no bathymetry data found — depth sounder disabled");
+        None
+    }
+
+    fn cell(&self, row: isize, col: isize) -> Option<i16> {
+        if row < 0 || col < 0 || row as usize >= self.nrows || col as usize >= self.ncols {
+            return None;
+        }
+        let v = self.data[row as usize * self.ncols + col as usize];
+        if v == 32767 { None } else { Some(v) }
+    }
+
+    /// Water depth (metres, positive down) at a position. GMRT's ~120 m cells
+    /// swallow narrow harbors (Prickly Bay reads as land), so when the cell is
+    /// non-water we spiral outward for the nearest water cell — the bay-mouth
+    /// sounding propagates inward, which matches the real anchorage depths.
+    pub fn depth_m(&self, lat_deg: f64, lon_deg: f64) -> Option<f64> {
+        let north = self.south + self.nrows as f64 * self.cellsize;
+        let col0 = ((lon_deg - self.west) / self.cellsize).floor() as isize;
+        let row0 = ((north - lat_deg) / self.cellsize).floor() as isize;
+        for radius in 0..=12isize {
+            // Deepest water cell in the first ring that has any: beach-sliver
+            // cells (−1 m contamination at the land edge) are noise; the
+            // navigable water body the boat floats in is the signal. Direct
+            // open-water hits (radius 0) are already conservative from the
+            // shallowest-in-block bake.
+            let mut deepest: Option<i16> = None;
+            for dr in -radius..=radius {
+                for dc in -radius..=radius {
+                    if dr.abs() != radius && dc.abs() != radius {
+                        continue; // ring only
+                    }
+                    if let Some(v) = self.cell(row0 + dr, col0 + dc) {
+                        if v < 0 {
+                            deepest = Some(deepest.map_or(v, |s| s.min(v)));
+                        }
+                    }
+                }
+            }
+            if let Some(v) = deepest {
+                return Some(-(v as f64));
+            }
+        }
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,6 +268,24 @@ mod tests {
         assert!(!m.on_land(11.82, -61.75), "open sea must be water");
         // Carriacou interior (in-bbox northern island).
         assert!(m.on_land(12.48, -61.455), "Carriacou interior must be land");
+    }
+
+    #[test]
+    fn bathy_depths_are_sane() {
+        let Some(g) = BathyGrid::load() else {
+            eprintln!("bathy data not present; skipping");
+            return;
+        };
+        // Prickly Bay anchorage: grid cell is land-contaminated; the rescue
+        // must produce a plausible harbor depth (bay mouth is ~6 m).
+        let d = g.depth_m(12.0010, -61.7640).expect("anchorage depth");
+        assert!(d > 1.0 && d < 30.0, "anchorage depth {d} m implausible");
+        // Offshore south: tens of metres.
+        let d = g.depth_m(11.95, -61.77).expect("offshore depth");
+        assert!(d > 10.0 && d < 200.0, "offshore depth {d} m implausible");
+        // Grenada Basin, well west: kilometres deep.
+        let d = g.depth_m(12.0, -62.1).expect("basin depth");
+        assert!(d > 500.0, "basin depth {d} m implausible");
     }
 
     #[test]

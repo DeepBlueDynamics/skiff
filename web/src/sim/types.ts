@@ -47,6 +47,9 @@ export type BoatState = {
   /** Diesel remaining, port/starboard tanks (liters; 275 L capacity each). */
   fuelPortL?: number;
   fuelStbdL?: number;
+  /** Water depth (m) and depth over keel (m) from the bathymetry grid. */
+  depthM?: number | null;
+  depthOverKeelM?: number | null;
 };
 
 export type SimSettings = {

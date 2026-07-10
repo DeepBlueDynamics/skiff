@@ -340,6 +340,8 @@ function SimulationLoop({ controlsRef }: { controlsRef: React.RefObject<any> }) 
           envLive: data.env_live,
           fuelPortL: data.fuel_port_l,
           fuelStbdL: data.fuel_stbd_l,
+          depthM: data.depth_m,
+          depthOverKeelM: data.depth_over_keel_m,
         });
       }
     } catch (e) {

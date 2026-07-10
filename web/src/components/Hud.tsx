@@ -35,6 +35,15 @@ export function Hud() {
       <Metric icon={<Gauge size={17} />} label="Stbd Eng" value={`${(boat.thrustStbd ?? 0).toFixed(0)} N`} />
       <Metric icon={<Fuel size={17} />} label="Fuel P/S" value={`${(boat.fuelPortL ?? 275).toFixed(0)} / ${(boat.fuelStbdL ?? 275).toFixed(0)} L`} />
       <Metric icon={<Fuel size={17} />} label="Range" value={rangeValue} />
+      <Metric
+        icon={<Waves size={17} />}
+        label="Depth (keel)"
+        value={
+          boat.depthOverKeelM != null
+            ? `${boat.depthOverKeelM < 99 ? boat.depthOverKeelM.toFixed(1) : boat.depthOverKeelM.toFixed(0)} m`
+            : '—'
+        }
+      />
       <Metric icon={<Waves size={17} />} label="Waves" value={`${settings.waveHeightM.toFixed(1)} m / ${settings.wavePeriodS.toFixed(0)} s`} />
       <Metric icon={<Sailboat size={17} />} label="Course" value={boat.course.replaceAll('-', ' ')} />
     </section>
