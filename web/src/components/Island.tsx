@@ -68,6 +68,9 @@ export function Island() {
         color: '#41603c', // tropical scrub green
         roughness: 0.96,
         metalness: 0.0,
+        // OSM ring winding is nominally CCW (land on the left), but any
+        // reversed ring would render inside-out — double-side is cheap here.
+        side: THREE.DoubleSide,
       }),
     []
   );

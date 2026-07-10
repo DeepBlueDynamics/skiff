@@ -118,17 +118,20 @@ function SimulationLoop({ controlsRef }: { controlsRef: React.RefObject<any> }) 
 
   useEffect(() => {
     const syncGpsAndWeather = async () => {
-      try {
-        await fetch('/v1/sim/position', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ lat_deg: settings.gpsLat, lon_deg: settings.gpsLon }),
-        });
-      } catch (e) {
-        console.error('Failed to sync starting position with backend:', e);
-      }
-
+      // Position is pushed ONLY in 'real' GPS mode. In simulated mode the
+      // backend owns the spawn (Prickly Bay, Grenada) — an unconditional push
+      // here used to teleport the boat to the default settings coordinates on
+      // every page load, stranding it 2,450 km from the rendered island.
       if (settings.dataSource === 'real') {
+        try {
+          await fetch('/v1/sim/position', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ lat_deg: settings.gpsLat, lon_deg: settings.gpsLon }),
+          });
+        } catch (e) {
+          console.error('Failed to sync starting position with backend:', e);
+        }
         const weather = await fetchRealTimeData(settings.gpsLat, settings.gpsLon);
         if (weather) {
           setSetting('windSpeedMps', weather.windSpeedMps);
