@@ -83,7 +83,10 @@ export function BoatModel() {
     sailJibNode,
     steeringWheelNode,
     travelerCarNode,
+    travelerCarRestY,
     travelerShackleNode,
+    travelerShackleRestY,
+    travelerSwivels,
     mainsheetRope,
     initialWheelQuaternion,
   } = useMemo(() => {
@@ -168,6 +171,39 @@ export function BoatModel() {
       trackCopy.name = 'traveler.track.arch';
       trackCopy.position.set(-0.001, 3.247, -4.358);
       (trackSrc.parent ?? clone).add(trackCopy);
+    }
+
+    // Object.076's fittings, separated into connected components and
+    // remounted as SWIVELS: pivot at each piece's bottom center, riding the
+    // traveler and free to yaw toward the load.
+    const travelerSwivels: THREE.Group[] = [];
+    {
+      const fittingSrc = findNode('object.076');
+      let fittingMesh: THREE.Mesh | null = null;
+      fittingSrc?.traverse((c) => {
+        if (c instanceof THREE.Mesh && !fittingMesh) fittingMesh = c;
+      });
+      if (fittingMesh) {
+        const fm = fittingMesh as THREE.Mesh;
+        clone.updateMatrixWorld(true);
+        const baked = fm.geometry.clone();
+        baked.applyMatrix4(fm.matrixWorld);
+        for (const part of splitConnectedComponents(baked, 8)) {
+          part.computeBoundingBox();
+          const bb = part.boundingBox!;
+          const cx = (bb.min.x + bb.max.x) / 2;
+          const cz = (bb.min.z + bb.max.z) / 2;
+          // Pivot (swivel axis) at the piece's bottom center.
+          part.translate(-cx, -bb.min.y, -cz);
+          const m = new THREE.Mesh(part, fm.material);
+          m.castShadow = true;
+          const pivot = new THREE.Group();
+          pivot.name = `traveler.swivel.${travelerSwivels.length}`;
+          pivot.add(m);
+          clone.add(pivot);
+          travelerSwivels.push(pivot);
+        }
+      }
     }
 
     // Mainsheet rope (Object.105): one baked mesh running car → boom blocks →
@@ -259,7 +295,10 @@ export function BoatModel() {
       sailJibNode: sailJib,
       steeringWheelNode: steeringWheel,
       travelerCarNode: travelerCar,
+      travelerCarRestY: travelerCar ? travelerCar.position.y : 3.273,
       travelerShackleNode: travelerShackle,
+      travelerShackleRestY: travelerShackle ? travelerShackle.position.y : 3.378,
+      travelerSwivels,
       mainsheetRope,
       initialWheelQuaternion
     };
@@ -299,9 +338,30 @@ export function BoatModel() {
       const pct = useSimulator.getState().settings.travelerPct ?? 0;
       const t = Math.max(-1, Math.min(1, pct / 100));
       const carX = -t * TRAVELER_TRACK_HALF_M;
-      if (travelerCarNode) travelerCarNode.position.x = carX;
+      // The arch top (Object.095) is cambered: y sags −0.0108·x² off center
+      // (measured fit). The whole assembly follows the curve.
+      const sag = ARCH_SAG_PER_X2 * carX * carX;
+      if (travelerCarNode) {
+        travelerCarNode.position.x = carX;
+        travelerCarNode.position.y = travelerCarRestY + sag;
+      }
       // The mainsheet block shackled onto the car (Object.078) rides along.
-      if (travelerShackleNode) travelerShackleNode.position.x = carX;
+      if (travelerShackleNode) {
+        travelerShackleNode.position.x = carX;
+        travelerShackleNode.position.y = travelerShackleRestY + sag;
+      }
+      // Separated Object.076 fittings: each swivels on its bottom pivot,
+      // riding the car and yawing toward the mainsheet's upper sheave.
+      if (travelerSwivels.length > 0) {
+        const n = travelerSwivels.length;
+        for (let i = 0; i < n; i++) {
+          const sv = travelerSwivels[i];
+          const side = (i - (n - 1) / 2) * 0.12;
+          sv.position.set(carX + side, 3.247 + sag, -4.358);
+          // Vertical-axis swivel: aim at the boom sheave overhead-centerline.
+          sv.rotation.y = Math.atan2(0 - (carX + side), -4.69 - -4.358);
+        }
+      }
       // Shear the mainsheet rope's tackle section toward the car. Weights:
       // full at car height (y ≤ 3.45) fading to zero at the boom sheaves
       // (y ≥ 4.65), and confined to the traveler zone (z ≤ −4 full, −3.4 off).
@@ -394,6 +454,82 @@ export function BoatModel() {
 // Traveler car = Object.104 in the export (rest centered, on the arch track).
 // Slide range stays inside the ±2.46 m track ends.
 const TRAVELER_TRACK_HALF_M = 2.2;
+// Arch-top camber measured from Object.095: y(x) = y0 − 0.0108·x² (m).
+const ARCH_SAG_PER_X2 = -0.0108;
+
+/// Split a (baked, world-space) geometry into its connected mesh islands.
+/// Vertices are welded by quantized position for connectivity only; each
+/// island comes back as an independent non-indexed BufferGeometry.
+function splitConnectedComponents(geo: THREE.BufferGeometry, maxParts: number): THREE.BufferGeometry[] {
+  const pos = geo.getAttribute('position') as THREE.BufferAttribute;
+  const index = geo.index;
+  const triCount = index ? index.count / 3 : pos.count / 3;
+  const vi = (t: number, k: number) => (index ? index.getX(t * 3 + k) : t * 3 + k);
+
+  // Weld by quantized position (1 mm) so seam-split vertices connect.
+  const weld = new Map<string, number>();
+  const weldOf = new Int32Array(pos.count);
+  for (let i = 0; i < pos.count; i++) {
+    const key = `${Math.round(pos.getX(i) * 1000)},${Math.round(pos.getY(i) * 1000)},${Math.round(pos.getZ(i) * 1000)}`;
+    let w = weld.get(key);
+    if (w === undefined) {
+      w = weld.size;
+      weld.set(key, w);
+    }
+    weldOf[i] = w;
+  }
+
+  // Union-find over welded ids.
+  const parent = new Int32Array(weld.size);
+  for (let i = 0; i < parent.length; i++) parent[i] = i;
+  const find = (a: number): number => {
+    while (parent[a] !== a) {
+      parent[a] = parent[parent[a]];
+      a = parent[a];
+    }
+    return a;
+  };
+  const union = (a: number, b: number) => {
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) parent[ra] = rb;
+  };
+  for (let t = 0; t < triCount; t++) {
+    union(weldOf[vi(t, 0)], weldOf[vi(t, 1)]);
+    union(weldOf[vi(t, 0)], weldOf[vi(t, 2)]);
+  }
+
+  // Bucket triangles by component root.
+  const buckets = new Map<number, number[]>();
+  for (let t = 0; t < triCount; t++) {
+    const root = find(weldOf[vi(t, 0)]);
+    let arr = buckets.get(root);
+    if (!arr) {
+      arr = [];
+      buckets.set(root, arr);
+    }
+    arr.push(t);
+  }
+
+  const parts: THREE.BufferGeometry[] = [];
+  const sorted = [...buckets.values()].sort((a, b) => b.length - a.length).slice(0, maxParts);
+  for (const tris of sorted) {
+    const out = new Float32Array(tris.length * 9);
+    let o = 0;
+    for (const t of tris) {
+      for (let k = 0; k < 3; k++) {
+        const v = vi(t, k);
+        out[o++] = pos.getX(v);
+        out[o++] = pos.getY(v);
+        out[o++] = pos.getZ(v);
+      }
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(out, 3));
+    g.computeVertexNormals();
+    parts.push(g);
+  }
+  return parts;
+}
 
 useGLTF.preload('/lagoon-450s.glb');
 useGLTF.preload('/sail-jib.glb');
