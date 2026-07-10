@@ -44,7 +44,7 @@ export type BoatState = {
   simTimeS?: number;
   /** True while live Meridian environment data is flowing into the backend. */
   envLive?: boolean;
-  /** Diesel remaining, port/starboard tanks (liters; 520 L capacity each). */
+  /** Diesel remaining, port/starboard tanks (liters; 275 L capacity each). */
   fuelPortL?: number;
   fuelStbdL?: number;
 };

@@ -9,6 +9,15 @@ export function Hud() {
   const windGround = vectorFromToDeg(settings.windSpeedMps, settings.windToDeg);
   const windWater = windOverWater(windGround, current);
 
+  // Motoring range at CURRENT burn and CURRENT speed over ground.
+  const burnFrac = (t: number) => Math.pow(Math.min(1, Math.abs(t) / 3000), 1.5);
+  const burnLph =
+    (settings.fuelBurnMaxLph ?? 9) * (burnFrac(boat.thrustPort ?? 0) + burnFrac(boat.thrustStbd ?? 0));
+  const fuelTotal = (boat.fuelPortL ?? 275) + (boat.fuelStbdL ?? 275);
+  const sogKt = boat.sogMps * MPS_TO_KNOT;
+  const rangeValue =
+    burnLph > 0.05 ? `${((fuelTotal / burnLph) * sogKt).toFixed(0)} nm` : '∞ (sail)';
+
   return (
     <section className="hud">
       <Metric icon={<MapPin size={17} />} label="GPS" value={boat.gps ? `${Math.abs(boat.gps.lat).toFixed(4)}°${boat.gps.lat >= 0 ? 'N' : 'S'}, ${Math.abs(boat.gps.lon).toFixed(4)}°${boat.gps.lon >= 0 ? 'E' : 'W'}` : 'Acquiring...'} />
@@ -24,7 +33,8 @@ export function Hud() {
       <Metric icon={<Gauge size={17} />} label="Pitch" value={`${(boat.pitchDeg ?? 0).toFixed(1)}°`} />
       <Metric icon={<Gauge size={17} />} label="Port Eng" value={`${(boat.thrustPort ?? 0).toFixed(0)} N`} />
       <Metric icon={<Gauge size={17} />} label="Stbd Eng" value={`${(boat.thrustStbd ?? 0).toFixed(0)} N`} />
-      <Metric icon={<Fuel size={17} />} label="Fuel P/S" value={`${(boat.fuelPortL ?? 520).toFixed(0)} / ${(boat.fuelStbdL ?? 520).toFixed(0)} L`} />
+      <Metric icon={<Fuel size={17} />} label="Fuel P/S" value={`${(boat.fuelPortL ?? 275).toFixed(0)} / ${(boat.fuelStbdL ?? 275).toFixed(0)} L`} />
+      <Metric icon={<Fuel size={17} />} label="Range" value={rangeValue} />
       <Metric icon={<Waves size={17} />} label="Waves" value={`${settings.waveHeightM.toFixed(1)} m / ${settings.wavePeriodS.toFixed(0)} s`} />
       <Metric icon={<Sailboat size={17} />} label="Course" value={boat.course.replaceAll('-', ' ')} />
     </section>

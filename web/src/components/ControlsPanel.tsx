@@ -533,7 +533,21 @@ export function ControlsPanel() {
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: 'var(--ink)', marginTop: '2px', fontFamily: 'monospace' }}>
           <span style={{ color: 'rgba(255,255,255,0.5)', fontFamily: 'sans-serif' }}>Tanks P / S</span>
-          <strong>{`${(boat.fuelPortL ?? 520).toFixed(0)} / ${(boat.fuelStbdL ?? 520).toFixed(0)} L`}</strong>
+          <strong>{`${(boat.fuelPortL ?? 275).toFixed(0)} / ${(boat.fuelStbdL ?? 275).toFixed(0)} L`}</strong>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: 'var(--ink)', marginTop: '2px', fontFamily: 'monospace' }}>
+          <span style={{ color: 'rgba(255,255,255,0.5)', fontFamily: 'sans-serif' }}>Endurance / Range</span>
+          <strong>
+            {(() => {
+              const f = (t: number) => Math.pow(Math.min(1, Math.abs(t) / 3000), 1.5);
+              const lph = settings.fuelBurnMaxLph * (f(input.thrustPort) + f(input.thrustStbd));
+              if (lph <= 0.05) return '∞ (sailing)';
+              const fuel = (boat.fuelPortL ?? 275) + (boat.fuelStbdL ?? 275);
+              const hours = fuel / lph;
+              const sogKt = boat.sogMps * 1.9438;
+              return `${hours.toFixed(1)} h · ${(hours * sogKt).toFixed(0)} nm @ ${sogKt.toFixed(1)} kt`;
+            })()}
+          </strong>
         </div>
         <button
           onClick={async () => {
@@ -557,7 +571,7 @@ export function ControlsPanel() {
             textAlign: 'center',
           }}
         >
-          FILL TANKS (2 × 520 L)
+          FILL TANKS (2 × 275 L)
         </button>
       </ControlGroup>
       </Section>

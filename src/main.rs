@@ -144,7 +144,7 @@ pub struct FullSimState {
     /// manually overridden, and the last fetch applied at least one field).
     #[serde(default)]
     pub env_live: bool,
-    /// Port/starboard diesel tanks (liters). Lagoon 450: 2 × 520 L. Burned by
+    /// Port/starboard diesel tanks (liters). Lagoon 450: 2 × 275 L. Burned by
     /// the physics loop from actual throttle; a dry tank kills its engine.
     #[serde(default = "default_tank")]
     pub fuel_port_l: f64,
@@ -153,7 +153,7 @@ pub struct FullSimState {
 }
 
 /// Lagoon 450 tank capacity per side (liters).
-pub const TANK_CAPACITY_L: f64 = 520.0;
+pub const TANK_CAPACITY_L: f64 = 275.0;
 
 fn default_tank() -> f64 {
     TANK_CAPACITY_L
