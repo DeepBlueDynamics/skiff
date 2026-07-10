@@ -50,6 +50,12 @@ export type BoatState = {
   /** Water depth (m) and depth over keel (m) from the bathymetry grid. */
   depthM?: number | null;
   depthOverKeelM?: number | null;
+  /** OpenCPN route guidance via SignalK; ageS derived from elapsed clocks. */
+  routeGuidance?: {
+    bearingTrueDeg?: number | null;
+    xteM?: number | null;
+    ageS: number;
+  } | null;
 };
 
 export type SimSettings = {

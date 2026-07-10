@@ -1,7 +1,7 @@
-import { useMemo, useRef, useEffect } from 'react';
+import { useMemo, useRef, useEffect, useState } from 'react';
 import * as THREE from 'three';
 import { useFrame } from '@react-three/fiber';
-import { useGLTF } from '@react-three/drei';
+import { useGLTF, Html } from '@react-three/drei';
 import { useSimulator } from '../sim/store';
 
 // Physics constants
@@ -27,6 +27,7 @@ const TACK_ANCHOR = new THREE.Vector3(-0.041, 2.028, 7.321); // Object.541 tack 
 // Object.122 traveler track ends (mirrored port/starboard), near the helm.
 // In this frame +x is PORT, and -x is STARBOARD.
 const SHEET_LEAD_PORT = new THREE.Vector3(2.459, 2.108, -4.033); // +x = PORT sheet lead
+const _forceDir = new THREE.Vector3();
 const SHEET_LEAD_STARBOARD = new THREE.Vector3(-2.459, 2.108, -4.033); // -x = STARBOARD sheet lead
 
 class Particle {
@@ -433,6 +434,12 @@ export function SpinnakerSail() {
   const filteredTorque = useRef(new THREE.Vector3());
   const filteredCentroid = useRef(new THREE.Vector3());
   
+  // Sail-force arrow hover toast state
+  const forceTipRef = useRef(new THREE.Vector3());
+  const forceMagRef = useRef(0);
+  const [forceHover, setForceHover] = useState(false);
+  const [forceToastText, setForceToastText] = useState('');
+
   const timeSinceLastPost = useRef(0);
   const timeSinceLastDebug = useRef(0);
   const timeSinceLastStoreUpdate = useRef(0);
@@ -914,6 +921,26 @@ export function SpinnakerSail() {
       filteredTorque.current.lerp(avgStepTorque, emaAlpha);
       filteredCentroid.current.lerp(avgCentroid, emaAlpha);
 
+      // Live sail-force arrow (the 'Sail force' toggle): resultant vector at
+      // the sail's center of effort — direction of push, length ∝ magnitude.
+      {
+        const f = filteredForce.current;
+        const mag = f.length();
+        if (mag > 1) {
+          forceArrow.visible = true;
+          forceArrow.position.copy(filteredCentroid.current);
+          _forceDir.copy(f).multiplyScalar(1 / mag);
+          forceArrow.setDirection(_forceDir);
+          forceArrow.setLength(Math.min(8, Math.max(0.8, mag / 400)), 0.6, 0.3);
+          forceTipRef.current
+            .copy(filteredCentroid.current)
+            .addScaledVector(_forceDir, Math.min(8, Math.max(0.8, mag / 400)));
+          forceMagRef.current = mag;
+        } else {
+          forceArrow.visible = false;
+        }
+      }
+
       // Sail-local frame is (+X port, +Y up, +Z bow) — right-handed.
       // Body frame is (+X fwd, +Y stbd, +Z down). Proper rotation, det = +1:
       const f_body = [
@@ -1251,9 +1278,51 @@ export function SpinnakerSail() {
         </>
       )}
 
-      {/* Resultant force arrow helper at the centroid */}
+      {/* Resultant force arrow at the sail's center of effort */}
       {settings.showForceArrows && (
-        <primitive object={forceArrow} />
+        <>
+          <primitive object={forceArrow} />
+          <mesh
+            position={forceTipRef.current}
+            onPointerOver={(e) => {
+              e.stopPropagation();
+              setForceHover(true);
+              setForceToastText(
+                `${(forceMagRef.current / 1000).toFixed(2)} kN`
+              );
+              document.body.style.cursor = 'pointer';
+            }}
+            onPointerOut={() => {
+              setForceHover(false);
+              document.body.style.cursor = 'auto';
+            }}
+          >
+            <sphereGeometry args={[0.5, 8, 8]} />
+            <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+          </mesh>
+          {forceHover && (
+            <Html position={forceTipRef.current} center style={{ pointerEvents: 'none' }}>
+              <div
+                style={{
+                  background: 'rgba(8, 22, 32, 0.92)',
+                  border: '1px solid #dce8f2',
+                  borderRadius: '8px',
+                  padding: '6px 10px',
+                  color: '#eef6f9',
+                  fontSize: '12px',
+                  whiteSpace: 'nowrap',
+                  transform: 'translateY(-26px)',
+                  fontFamily: 'sans-serif',
+                }}
+              >
+                <div style={{ fontWeight: 700, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  Sail force
+                </div>
+                <div style={{ fontFamily: 'monospace' }}>{forceToastText}</div>
+              </div>
+            </Html>
+          )}
+        </>
       )}
     </group>
   );

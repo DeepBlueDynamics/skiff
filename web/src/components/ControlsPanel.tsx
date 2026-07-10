@@ -433,6 +433,22 @@ export function ControlsPanel() {
           />
           Enable Autopilot
         </label>
+        {boat.routeGuidance && boat.routeGuidance.ageS < 15 && (
+          <div style={{
+            background: 'rgba(14, 165, 233, 0.12)',
+            border: '1px solid rgba(14, 165, 233, 0.35)',
+            borderRadius: '4px',
+            padding: '6px 8px',
+            fontSize: '11px',
+            color: '#7dd3fc',
+            marginBottom: '8px',
+            fontFamily: 'monospace',
+          }}>
+            ⛵ OpenCPN route: brg {boat.routeGuidance.bearingTrueDeg?.toFixed(0) ?? '—'}°
+            {boat.routeGuidance.xteM != null ? ` · XTE ${boat.routeGuidance.xteM.toFixed(0)} m` : ''}
+            {settings.autopilotEnabled ? ' · following' : ' · enable AP to follow'}
+          </div>
+        )}
         <Slider
           label="Rudder"
           value={Math.round(-input.helm * 32)}

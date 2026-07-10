@@ -158,6 +158,14 @@ pub struct FullSimState {
     /// Depth over keel: depth − draft (Lagoon 450S draft 1.3 m).
     #[serde(default)]
     pub depth_over_keel_m: Option<f64>,
+    /// Route guidance received from SignalK (OpenCPN activated route):
+    /// bearing to next waypoint, XTE. The frontend autopilot follows it
+    /// while fresh.
+    #[serde(default)]
+    pub route_guidance: Option<skiff::signalk::RouteGuidance>,
+    /// elapsed_s when route_guidance last updated (staleness check).
+    #[serde(default)]
+    pub route_guidance_at_s: Option<f64>,
 }
 
 /// Lagoon 450S draft (m).
@@ -295,6 +303,8 @@ fn create_initial_state() -> FullSimState {
         fuel_stbd_l: TANK_CAPACITY_L,
         depth_m: None,
         depth_over_keel_m: None,
+        route_guidance: None,
+        route_guidance_at_s: None,
     }
 }
 
@@ -330,7 +340,36 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(HttpEnvironmentProvider::new(meridian_url, user_token.clone()));
 
     // Instantiate Signal K Client
-    let sk_client = sk_host.map(|host| SignalKClient::new(host, sk_token));
+    // Route guidance flows back FROM SignalK (OpenCPN activated routes):
+    // the client subscribes and pushes parsed guidance into this channel;
+    // the consumer task below merges it into sim state for the autopilot.
+    let (guidance_tx, mut guidance_rx) =
+        tokio::sync::mpsc::unbounded_channel::<skiff::signalk::RouteGuidance>();
+    let sk_client = sk_host.map(|host| SignalKClient::new(host, sk_token, Some(guidance_tx)));
+    {
+        let state_for_guidance = shared_state.clone();
+        tokio::spawn(async move {
+            while let Some(g) = guidance_rx.recv().await {
+                let mut state = state_for_guidance.write().unwrap();
+                let now = state.elapsed_s;
+                let merged = match state.route_guidance.take() {
+                    Some(mut cur) => {
+                        if g.bearing_true_deg.is_some() { cur.bearing_true_deg = g.bearing_true_deg; }
+                        if g.xte_m.is_some() { cur.xte_m = g.xte_m; }
+                        if g.next_lat_deg.is_some() { cur.next_lat_deg = g.next_lat_deg; }
+                        if g.next_lon_deg.is_some() { cur.next_lon_deg = g.next_lon_deg; }
+                        cur
+                    }
+                    None => {
+                        tracing::info!(?g, "route guidance from SignalK (OpenCPN) engaged");
+                        g
+                    }
+                };
+                state.route_guidance = Some(merged);
+                state.route_guidance_at_s = Some(now);
+            }
+        });
+    }
 
     // Background Thread: Weather Fetching Loop (Every 30 seconds)
     let state_for_weather = shared_state.clone();

@@ -231,10 +231,18 @@ function SimulationLoop({ controlsRef }: { controlsRef: React.RefObject<any> }) 
     accumulated.current.sailTrim = Math.min(1, Math.max(0, accumulated.current.sailTrim + input.trimDelta * dt * 0.35));
     accumulated.current.reef = Math.min(1, Math.max(0, accumulated.current.reef + input.reefDelta * dt * 0.25));
 
-    // Autopilot control loop
+    // Autopilot control loop. When OpenCPN route guidance is flowing (via
+    // SignalK, fresh within 15 s), the route's bearing to the next waypoint
+    // IS the autopilot target — update the route in OpenCPN and the boat
+    // follows. Manual target heading applies otherwise.
     let currentHelm = input.helm;
     if (settings.autopilotEnabled) {
-      let error = settings.targetHeading - boat.headingDeg;
+      const rg = boat.routeGuidance;
+      const apTarget =
+        rg && rg.bearingTrueDeg != null && rg.ageS < 15
+          ? rg.bearingTrueDeg
+          : settings.targetHeading;
+      let error = apTarget - boat.headingDeg;
       error = ((error + 180) % 360 + 360) % 360 - 180; // normalize to [-180, 180]
       const Kp = 0.06;
       const targetHelm = Math.max(-1.0, Math.min(1.0, -error * Kp));
@@ -342,6 +350,14 @@ function SimulationLoop({ controlsRef }: { controlsRef: React.RefObject<any> }) 
           fuelStbdL: data.fuel_stbd_l,
           depthM: data.depth_m,
           depthOverKeelM: data.depth_over_keel_m,
+          routeGuidance:
+            data.route_guidance && data.route_guidance_at_s != null
+              ? {
+                  bearingTrueDeg: data.route_guidance.bearing_true_deg,
+                  xteM: data.route_guidance.xte_m,
+                  ageS: Math.max(0, data.elapsed_s - data.route_guidance_at_s),
+                }
+              : null,
         });
       }
     } catch (e) {
