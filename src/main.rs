@@ -39,6 +39,13 @@ pub struct SimControlInput {
     /// Mainsheet traveler car: −1 full port, 0 centered, +1 full starboard.
     #[serde(default)]
     pub traveler: f64,
+    /// Full-throttle fuel burn per engine (L/h) for tank tracking.
+    #[serde(default = "default_burn")]
+    pub fuel_burn_max_lph: f64,
+}
+
+fn default_burn() -> f64 {
+    9.0 // Yanmar 4JH45 ballpark at WOT
 }
 
 fn default_mass_scale() -> f64 {
@@ -137,6 +144,19 @@ pub struct FullSimState {
     /// manually overridden, and the last fetch applied at least one field).
     #[serde(default)]
     pub env_live: bool,
+    /// Port/starboard diesel tanks (liters). Lagoon 450: 2 × 520 L. Burned by
+    /// the physics loop from actual throttle; a dry tank kills its engine.
+    #[serde(default = "default_tank")]
+    pub fuel_port_l: f64,
+    #[serde(default = "default_tank")]
+    pub fuel_stbd_l: f64,
+}
+
+/// Lagoon 450 tank capacity per side (liters).
+pub const TANK_CAPACITY_L: f64 = 520.0;
+
+fn default_tank() -> f64 {
+    TANK_CAPACITY_L
 }
 
 /// Fresh cloth wrench is used while younger than this; then blended out over
@@ -247,6 +267,7 @@ fn create_initial_state() -> FullSimState {
             thrust_stbd: 0.0,
             mass_scale: 1.0,
             traveler: 0.0,
+            fuel_burn_max_lph: 9.0,
         },
         env,
         trail: vec![Vec2Mps::ZERO],
@@ -259,6 +280,8 @@ fn create_initial_state() -> FullSimState {
         sail_blend: 0.0,
         aground: false,
         env_live: false,
+        fuel_port_l: TANK_CAPACITY_L,
+        fuel_stbd_l: TANK_CAPACITY_L,
     }
 }
 
@@ -480,11 +503,22 @@ async fn main() -> anyhow::Result<()> {
                 current_world: [state.env.current_ground_mps.north, state.env.current_ground_mps.east, 0.0],
                 wave_pose,
             };
+            // Fuel: burn ∝ (thrust fraction)^1.5 (≈ power curve) per engine.
+            // A dry tank kills its engine — effective thrust forced to zero.
+            {
+                let burn_max = state.control.fuel_burn_max_lph.clamp(0.0, 40.0);
+                let frac = |t: f64| (t.abs() / 3000.0).min(1.0).powf(1.5);
+                let lps = burn_max / 3600.0;
+                state.fuel_port_l =
+                    (state.fuel_port_l - lps * frac(state.control.thrust_port) * dt).max(0.0);
+                state.fuel_stbd_l =
+                    (state.fuel_stbd_l - lps * frac(state.control.thrust_stbd) * dt).max(0.0);
+            }
             let ctrl_phys = cat_physics::CatControl {
                 rudder_cmd: state.control.helm * params.rudder_max,
                 sail_trim: cat_physics::sail_trim_to_sheet_rad(state.control.sail_trim),
-                thrust_port: state.control.thrust_port,
-                thrust_stbd: state.control.thrust_stbd,
+                thrust_port: if state.fuel_port_l > 0.0 { state.control.thrust_port } else { 0.0 },
+                thrust_stbd: if state.fuel_stbd_l > 0.0 { state.control.thrust_stbd } else { 0.0 },
                 traveler: state.control.traveler,
             };
 
@@ -742,6 +776,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/sim/sail_wrench", post(post_sail_wrench))
         .route("/v1/auth/token", post(post_auth_token))
         .route("/v1/auth/logout", post(post_auth_logout))
+        .route("/v1/sim/refuel", post(post_refuel))
         // precompressed_gzip: serves foo.gz with Content-Encoding when present —
         // the 42 MB hull GLB exceeds Cloud Run's 32 MB HTTP/1 response cap,
         // but its .gz (27 MB) fits. Browsers always send Accept-Encoding: gzip.
@@ -795,6 +830,15 @@ async fn post_environment(
 #[derive(Debug, Deserialize)]
 struct AuthTokenInput {
     token: String,
+}
+
+/// Fill both diesel tanks to capacity.
+async fn post_refuel(State(state): State<AppState>) -> Json<FullSimState> {
+    let mut current = state.sim_state.write().unwrap();
+    current.fuel_port_l = TANK_CAPACITY_L;
+    current.fuel_stbd_l = TANK_CAPACITY_L;
+    tracing::info!("Tanks refueled to 2x{TANK_CAPACITY_L} L");
+    Json(current.clone())
 }
 
 /// Store the user's Meridian/Nuts JWT (from the browser login flow) so the

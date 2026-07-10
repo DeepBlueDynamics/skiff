@@ -531,6 +531,34 @@ export function ControlsPanel() {
             })()}
           </strong>
         </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: 'var(--ink)', marginTop: '2px', fontFamily: 'monospace' }}>
+          <span style={{ color: 'rgba(255,255,255,0.5)', fontFamily: 'sans-serif' }}>Tanks P / S</span>
+          <strong>{`${(boat.fuelPortL ?? 520).toFixed(0)} / ${(boat.fuelStbdL ?? 520).toFixed(0)} L`}</strong>
+        </div>
+        <button
+          onClick={async () => {
+            try {
+              await fetch('/v1/sim/refuel', { method: 'POST' });
+            } catch (e) {
+              console.error('Refuel failed:', e);
+            }
+          }}
+          style={{
+            width: '100%',
+            padding: '6px 10px',
+            marginTop: '8px',
+            background: 'rgba(63, 185, 80, 0.12)',
+            border: '1px solid rgba(63, 185, 80, 0.35)',
+            borderRadius: '4px',
+            color: '#7ee2a8',
+            fontSize: '11px',
+            fontWeight: 'bold',
+            cursor: 'pointer',
+            textAlign: 'center',
+          }}
+        >
+          FILL TANKS (2 × 520 L)
+        </button>
       </ControlGroup>
       </Section>
       <div className="keys">

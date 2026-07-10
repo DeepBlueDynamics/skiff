@@ -1,4 +1,4 @@
-import { Anchor, Gauge, Navigation, Sailboat, Waves, Wind, MapPin } from 'lucide-react';
+import { Anchor, Fuel, Gauge, Navigation, Sailboat, Waves, Wind, MapPin } from 'lucide-react';
 import { MPS_TO_KNOT, vectorFromToDeg, vectorMagnitude, vectorToDeg, windOverWater } from '../sim/math';
 import { useSimulator } from '../sim/store';
 
@@ -24,6 +24,7 @@ export function Hud() {
       <Metric icon={<Gauge size={17} />} label="Pitch" value={`${(boat.pitchDeg ?? 0).toFixed(1)}°`} />
       <Metric icon={<Gauge size={17} />} label="Port Eng" value={`${(boat.thrustPort ?? 0).toFixed(0)} N`} />
       <Metric icon={<Gauge size={17} />} label="Stbd Eng" value={`${(boat.thrustStbd ?? 0).toFixed(0)} N`} />
+      <Metric icon={<Fuel size={17} />} label="Fuel P/S" value={`${(boat.fuelPortL ?? 520).toFixed(0)} / ${(boat.fuelStbdL ?? 520).toFixed(0)} L`} />
       <Metric icon={<Waves size={17} />} label="Waves" value={`${settings.waveHeightM.toFixed(1)} m / ${settings.wavePeriodS.toFixed(0)} s`} />
       <Metric icon={<Sailboat size={17} />} label="Course" value={boat.course.replaceAll('-', ' ')} />
     </section>

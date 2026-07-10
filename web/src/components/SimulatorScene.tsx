@@ -286,6 +286,7 @@ function SimulationLoop({ controlsRef }: { controlsRef: React.RefObject<any> }) 
           thrust_stbd: input.thrustStbd,
           mass_scale: (settings.massScalePct ?? 100) / 100,
           traveler: (settings.travelerPct ?? 0) / 100,
+          fuel_burn_max_lph: settings.fuelBurnMaxLph ?? 9,
         }),
       });
 
@@ -337,6 +338,8 @@ function SimulationLoop({ controlsRef }: { controlsRef: React.RefObject<any> }) 
           slamWarning: data.slam_warning,
           simTimeS: data.elapsed_s,
           envLive: data.env_live,
+          fuelPortL: data.fuel_port_l,
+          fuelStbdL: data.fuel_stbd_l,
         });
       }
     } catch (e) {
