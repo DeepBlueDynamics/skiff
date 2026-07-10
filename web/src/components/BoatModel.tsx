@@ -84,8 +84,10 @@ export function BoatModel() {
     steeringWheelNode,
     travelerCarNode,
     travelerCarRestY,
+    travelerCarQuat,
     travelerShackleNode,
     travelerShackleRestY,
+    travelerShackleQuat,
     travelerSwivels,
     mainsheetRope,
     initialWheelQuaternion,
@@ -123,7 +125,7 @@ export function BoatModel() {
         if (child.name) {
           const clean = child.name.replace(/[\._]/g, '').toLowerCase();
           const HIDDEN = new Set([
-            'object515', 'object113',
+            'object515', 'object113', 'object540',
             'object080', 'object056', 'object024', 'object076',
             'object081', 'object025', 'object103',
           ]);
@@ -303,6 +305,8 @@ export function BoatModel() {
     const wrapper = new THREE.Group();
     wrapper.add(clone);
     const initialWheelQuaternion = steeringWheel ? steeringWheel.quaternion.clone() : new THREE.Quaternion();
+    const travelerCarQuat = travelerCar ? travelerCar.quaternion.clone() : new THREE.Quaternion();
+    const travelerShackleQuat = travelerShackle ? travelerShackle.quaternion.clone() : new THREE.Quaternion();
     return { 
       formattedScene: wrapper, 
       rudderPortNode: rudderPort, 
@@ -314,8 +318,10 @@ export function BoatModel() {
       steeringWheelNode: steeringWheel,
       travelerCarNode: travelerCar,
       travelerCarRestY: travelerCar ? travelerCar.position.y : 3.273,
+      travelerCarQuat,
       travelerShackleNode: travelerShackle,
       travelerShackleRestY: travelerShackle ? travelerShackle.position.y : 3.378,
+      travelerShackleQuat,
       travelerSwivels,
       mainsheetRope,
       initialWheelQuaternion
@@ -359,17 +365,25 @@ export function BoatModel() {
       // The arch top (Object.095) is cambered: y sags −0.0108·x² off center
       // (measured fit). The whole assembly follows the curve.
       const sag = ARCH_SAG_PER_X2 * carX * carX;
+      // Tip the whole assembly tangent to the rail curve: slope dy/dx = 2ax,
+      // rolled about the fore-aft (glTF z/bow) axis on top of each node's
+      // authored orientation.
+      const tilt = Math.atan(2 * ARCH_SAG_PER_X2 * carX);
+      _tiltQuat.setFromAxisAngle(TILT_AXIS_Z, tilt);
       if (travelerCarNode) {
         travelerCarNode.position.x = carX;
         travelerCarNode.position.y = travelerCarRestY + sag;
+        travelerCarNode.quaternion.copy(_tiltQuat).multiply(travelerCarQuat);
       }
       // The mainsheet block shackled onto the car (Object.078) rides along.
       if (travelerShackleNode) {
         travelerShackleNode.position.x = carX;
         travelerShackleNode.position.y = travelerShackleRestY + sag;
+        travelerShackleNode.quaternion.copy(_tiltQuat).multiply(travelerShackleQuat);
       }
       // Separated Object.076 fittings (shackle + ring): each swivels on its
-      // bottom pivot, mounted ON the car (same z), yawing toward the load.
+      // bottom pivot, mounted ON the car (same z), yawing toward the load,
+      // tipping with the rail.
       if (travelerSwivels.length > 0) {
         const n = travelerSwivels.length;
         for (let i = 0; i < n; i++) {
@@ -377,9 +391,8 @@ export function BoatModel() {
           const side = (i - (n - 1) / 2) * 0.12;
           const x = carX + side;
           sv.position.set(x, travelerCarRestY + 0.035 + sag, -4.689);
-          // Vertical-axis swivel: face the mainsheet pull (upper sheave,
-          // centerline just forward of the car).
-          sv.rotation.y = Math.atan2(-x, 0.09);
+          _yawQuat.setFromAxisAngle(AXIS_Y_LOCAL, Math.atan2(-x, 0.09));
+          sv.quaternion.copy(_tiltQuat).multiply(_yawQuat);
         }
       }
       // Shear the mainsheet rope's tackle section toward the car. Weights:
@@ -472,8 +485,13 @@ export function BoatModel() {
 }
 
 // Traveler car = Object.104 in the export (rest centered, on the arch track).
-// Slide range stays inside the ±2.46 m track ends.
-const TRAVELER_TRACK_HALF_M = 2.2;
+// Travel trimmed 25% off the raw ±2.2 m throw per Kord (keeps the car on the
+// usable rail, off the end fittings).
+const TRAVELER_TRACK_HALF_M = 1.65;
+const TILT_AXIS_Z = new THREE.Vector3(0, 0, 1);
+const _tiltQuat = new THREE.Quaternion();
+const _yawQuat = new THREE.Quaternion();
+const AXIS_Y_LOCAL = new THREE.Vector3(0, 1, 0);
 // Arch-top camber measured across the FULL arch (Object.003 + neighbors,
 // 8.7k surface points): y(x) = y0 − 0.0265·x² — 13 cm of drop at the track
 // ends. (First fit used only the small Object.095 segment and undershot.)
