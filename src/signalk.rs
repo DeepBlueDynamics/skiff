@@ -128,7 +128,7 @@ async fn connection_task(
                     let sub = serde_json::json!({
                         "context": "vessels.self",
                         "subscribe": [
-                            { "path": "navigation.course*", "period": 1000, "policy": "instant" },
+                            { "path": "navigation.*", "period": 1000, "policy": "instant" },
                             { "path": "steering.*", "period": 1000, "policy": "instant" }
                         ]
                     });
@@ -203,6 +203,8 @@ fn parse_guidance(text: &str) -> Option<RouteGuidance> {
                     any = true;
                 }
             } else if path.ends_with("nextPoint.bearingTrue")
+                || path.ends_with("bearingToDestinationTrue")
+                || path.ends_with("bearingOriginToDestinationTrue")
                 || path.ends_with("calcValues.bearingTrue")
                 || path.ends_with("bearingTrackTrue")
                 || path.ends_with("autopilot.target.headingTrue")

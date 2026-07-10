@@ -748,7 +748,7 @@ async fn main() -> anyhow::Result<()> {
                     context: "vessels.self".to_string(),
                     updates: vec![SignalKUpdate {
                         source: SignalKSource {
-                            label: "sailing-simulator".to_string(),
+                            label: format!("sailing-simulator@{}", std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).unwrap_or_else(|_| "unknown".into())),
                             source_type: "simulator".to_string(),
                         },
                         values: vec![
