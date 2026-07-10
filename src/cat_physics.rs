@@ -853,6 +853,20 @@ fn cat_derivative(
         cat_restoring(&eta, p)
     };
 
+    // Down-slope gravity (long-wave Froude-Krylov surge): a hull sitting on a
+    // tilted surface is pushed toward the low side — decelerating up the face,
+    // SURFING down the back. Without this the boat pitches in place at the CG
+    // like it's on gimbals and never rides the sea. Signs (measured display
+    // conventions): θ target bow-up-positive → surface rising toward the bow
+    // pushes AFT (engine −x); φ target port-down-positive → surface higher to
+    // starboard pushes toward display-port (engine +y).
+    let mut tau = tau;
+    if let Some(wp) = env.wave_pose {
+        let w = p.mass * 9.81;
+        tau[0] -= w * wp[2].sin();
+        tau[1] += w * wp[1].sin();
+    }
+
     // Acceleration nu_dot
     let mut nu_dot = [0.0; 6];
     for i in 0..6 {
@@ -1414,10 +1428,20 @@ mod tests {
             "roll should settle to the transverse slope, phi = {} rad",
             st.eta[3]
         );
+        // Wider tolerance than roll: the bow-down tilt SURFS the boat forward
+        // (down-slope gravity), and the moving hull trims a little beyond the
+        // static spring target — that's the wave-surge physics, not an error.
         assert!(
-            (st.eta[4] + 0.08).abs() < 0.02,
-            "pitch should settle to the longitudinal slope, theta = {} rad",
+            (st.eta[4] + 0.08).abs() < 0.04,
+            "pitch should settle near the longitudinal slope, theta = {} rad",
             st.eta[4]
+        );
+        // And the down-slope force must actually drive the boat: a standing
+        // start on a bow-down surface should be surfing forward by now.
+        assert!(
+            st.nu[0] > 0.5,
+            "bow-down surface should surf the boat forward, u = {} m/s",
+            st.nu[0]
         );
         // And flat water must leave the boat untouched.
         let flat = dead_calm();

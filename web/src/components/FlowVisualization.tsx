@@ -2,7 +2,7 @@ import { useRef, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { useSimulator } from '../sim/store';
-import { degToRad, getWaveHeight } from '../sim/math';
+import { degToRad, waveElevation } from '../sim/math';
 
 interface FlowParticle {
   x: number;
@@ -139,9 +139,27 @@ export function FlowVisualization() {
   }, []);
   const wakeCursor = useRef(0);
   const wakeSpawnAcc = useRef(0);
+  // Wave phase on the backend clock (same pattern as Water.tsx) so surface
+  // particles ride the SAME wave the mesh renders and the hull feels.
+  const waveClock = useRef({ t: 0, lastSample: -1 });
 
   useFrame(({ clock }, delta) => {
     const dt = Math.min(delta, 0.05);
+
+    const wc = waveClock.current;
+    wc.t += Math.min(delta, 0.2);
+    if (boat.simTimeS !== undefined && boat.simTimeS !== wc.lastSample) {
+      wc.t = boat.simTimeS;
+      wc.lastSample = boat.simTimeS;
+    }
+    // Local sea-surface elevation (display east/north). Particles store
+    // SURFACE-RELATIVE heights in p.z; add η at render so foam sits on the
+    // moving sea, not on flat-water level.
+    const seaEta =
+      settings.waveHeightM > 0.001
+        ? (east: number, north: number) =>
+            waveElevation(east, north, wc.t, settings.waveHeightM, settings.wavePeriodS, settings.waveToDeg)
+        : () => 0;
 
     // 1. Apparent wind flow (air) relative to the boat
     const windSpeed = settings.windSpeedMps;
@@ -227,7 +245,7 @@ export function FlowVisualization() {
         }
         p.z = p.zOffset ?? -0.1;
         const fade = Math.sin((p.age / p.maxAge) * Math.PI);
-        tempObject.position.set(p.x, p.z, -p.y);
+        tempObject.position.set(p.x, seaEta(p.x, p.y) + p.z, -p.y);
         // -angle: chevron forward is -Z, same convention as the boat's -heading
         tempObject.rotation.set(0, -setAngleRad, 0);
         tempObject.scale.set(fade * 0.225 + 0.001, 1, fade * 0.225 + 0.001);
@@ -257,7 +275,7 @@ export function FlowVisualization() {
         }
         p.z = 0.05;
         const fade = Math.sin((p.age / p.maxAge) * Math.PI);
-        tempObject.position.set(p.x, p.z, -p.y);
+        tempObject.position.set(p.x, seaEta(p.x, p.y) + p.z, -p.y);
         tempObject.rotation.set(0, relWaterAngleRad, 0);
         tempObject.scale.set(fade * 1.5, fade * 0.6, fade * 1.5);
         tempObject.updateMatrix();
@@ -331,7 +349,7 @@ export function FlowVisualization() {
         const grow = 1 + lifeT * 1.6; // foam patch spreads as it ages
         // Real vertical thickness so foam still reads at grazing camera
         // angles — a flat quad projects to nothing edge-on.
-        tempObject.position.set(p.x, p.z, -p.y);
+        tempObject.position.set(p.x, seaEta(p.x, p.y) + p.z, -p.y);
         tempObject.rotation.set(0, relWaterAngleRad, 0);
         const s = (p.size ?? 0.5) * grow * 0.93; // 7% smaller overall
         tempObject.scale.set(s * fade + 0.001, s * fade * 0.22 + 0.001, s * fade + 0.001);
@@ -390,7 +408,7 @@ export function FlowVisualization() {
         p.z = Math.min(p.z + 0.2 * dt, -0.06); // bubbles rise, stay submerged
         const fade = Math.sin(Math.min(lifeT, 1) * Math.PI);
         const s = (p.size ?? 0.15) * (1 + lifeT * 0.8);
-        tempObject.position.set(p.x, p.z, -p.y);
+        tempObject.position.set(p.x, seaEta(p.x, p.y) + p.z, -p.y);
         tempObject.rotation.set(0, 0, 0);
         tempObject.scale.set(s * fade + 0.001, 1, s * fade + 0.001);
         tempObject.updateMatrix();

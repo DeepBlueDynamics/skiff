@@ -18,10 +18,11 @@ export type AuthClaims = {
 };
 
 export function loginUrl(): string {
-  const cb = `${window.location.origin}${window.location.pathname}`;
-  const ret = `${cb}?scope=${encodeURIComponent(SCOPES)}&scopes=${encodeURIComponent(
-    SCOPES.split(' ').join(',')
-  )}`;
+  // Return URL must carry NO query string: nuts-auth's OAuth callbacks append
+  // "?token=..." blindly, so any existing "?" produces a malformed double-?
+  // URL and the token never parses (the email flow handles it, Google/GitHub
+  // don't). Scopes are currently issued server-side anyway.
+  const ret = `${window.location.origin}${window.location.pathname}`;
   return `${AUTH_BASE}/login?return_url=${encodeURIComponent(ret)}`;
 }
 
@@ -64,19 +65,17 @@ async function pushTokenToBackend(token: string): Promise<boolean> {
  *  backend with whatever valid token we hold, and return it. */
 export async function initAuth(): Promise<string | null> {
   const params = new URLSearchParams(window.location.search);
-  const fresh = params.get('token');
+  // Robust extraction: tolerate the malformed double-? URLs older login
+  // links produce (token= buried inside another param's value).
+  const fresh =
+    params.get('token') ??
+    window.location.href.match(/[?&]token=([\w\-.]+)/)?.[1] ??
+    null;
   if (fresh) {
     window.localStorage.setItem(STORAGE_KEY, fresh);
-    // Scrub the token (and login scope echoes) out of the address bar.
-    params.delete('token');
-    params.delete('scope');
-    params.delete('scopes');
-    const qs = params.toString();
-    window.history.replaceState(
-      {},
-      '',
-      window.location.pathname + (qs ? `?${qs}` : '')
-    );
+    // Scrub the token out of the address bar. Nothing else lives in the
+    // query string, so drop it wholesale (also cleans malformed double-?).
+    window.history.replaceState({}, '', window.location.pathname);
   }
   const token = storedToken();
   if (token) await pushTokenToBackend(token);
