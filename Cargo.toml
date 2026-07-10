@@ -40,3 +40,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
 toml = "0.8"
 tower-http = { version = "0.6", features = ["cors", "fs"] }
+# SignalK delta input is WebSocket (server-node rejects HTTP POST deltas);
+# plain ws:// on LAN/localhost, so no TLS feature needed.
+tokio-tungstenite = "0.24"
+futures-util = "0.3"

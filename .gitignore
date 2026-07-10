@@ -5,3 +5,5 @@ web/dist
 skiff.zip
 *.log
 reports/
+id_ed25519_pi
+id_ed25519_pi.pub

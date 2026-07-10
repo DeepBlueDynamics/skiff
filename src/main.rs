@@ -22,6 +22,8 @@ use skiff::env::{
 use skiff::cat_physics;
 use skiff::signalk::{SignalKClient, SignalKDelta, SignalKUpdate, SignalKSource, SignalKPathValue};
 
+mod mcp;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimControlInput {
     pub helm: f64,       // -1.0 (port) to 1.0 (starboard)
@@ -777,6 +779,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/auth/token", post(post_auth_token))
         .route("/v1/auth/logout", post(post_auth_logout))
         .route("/v1/sim/refuel", post(post_refuel))
+        // Native MCP server (streamable-HTTP, stateless):
+        //   claude mcp add skiff --transport http http://<host>:<port>/mcp
+        .route("/mcp", post(mcp::handle_post).get(mcp::handle_get).delete(mcp::handle_delete))
         // precompressed_gzip: serves foo.gz with Content-Encoding when present —
         // the 42 MB hull GLB exceeds Cloud Run's 32 MB HTTP/1 response cap,
         // but its .gz (27 MB) fits. Browsers always send Accept-Encoding: gzip.
