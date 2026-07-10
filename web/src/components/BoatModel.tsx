@@ -229,8 +229,8 @@ export function BoatModel() {
     // Live mainsheet: one line TIED to Object.077 (the boom-end block at
     // (0, 4.44, −4.73)), other end following the traveler shackle. Replaces
     // the baked Object.105 rope (hidden above).
-    const mainsheetLine = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.012, 0.012, 1, 6),
+    const mainsheetLine: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial> = new THREE.Mesh(
+      new THREE.TubeGeometry(_sheetCurve, 4, 0.012, 6, false),
       new THREE.MeshStandardMaterial({ color: 0x24272d, roughness: 0.85 })
     );
     mainsheetLine.name = 'mainsheet.line';
