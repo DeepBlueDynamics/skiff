@@ -166,6 +166,11 @@ pub struct FullSimState {
     /// elapsed_s when route_guidance last updated (staleness check).
     #[serde(default)]
     pub route_guidance_at_s: Option<f64>,
+    /// Backend course-hold (MCP `set_course`): when Some, the physics loop
+    /// steers to this true heading, overriding manual helm. Lives OUTSIDE
+    /// SimControlInput so browser control posts can't silently clear it.
+    #[serde(default)]
+    pub ap_heading_deg: Option<f64>,
 }
 
 /// Lagoon 450S draft (m).
@@ -305,6 +310,7 @@ fn create_initial_state() -> FullSimState {
         depth_over_keel_m: None,
         route_guidance: None,
         route_guidance_at_s: None,
+        ap_heading_deg: None,
     }
 }
 
@@ -571,8 +577,18 @@ async fn main() -> anyhow::Result<()> {
                 state.fuel_stbd_l =
                     (state.fuel_stbd_l - lps * frac(state.control.thrust_stbd) * dt).max(0.0);
             }
+            // Backend course-hold: same P-gain as the browser autopilot.
+            // Overrides manual helm while engaged (browser AP's helm posts
+            // are simply ignored — one course-holder at a time, backend wins).
+            let effective_helm = if let Some(target) = state.ap_heading_deg {
+                let mut err = target - state.heading_true_deg;
+                err = ((err + 180.0).rem_euclid(360.0)) - 180.0;
+                (-err * 0.06).clamp(-1.0, 1.0)
+            } else {
+                state.control.helm
+            };
             let ctrl_phys = cat_physics::CatControl {
-                rudder_cmd: state.control.helm * params.rudder_max,
+                rudder_cmd: effective_helm * params.rudder_max,
                 sail_trim: cat_physics::sail_trim_to_sheet_rad(state.control.sail_trim),
                 thrust_port: if state.fuel_port_l > 0.0 { state.control.thrust_port } else { 0.0 },
                 thrust_stbd: if state.fuel_stbd_l > 0.0 { state.control.thrust_stbd } else { 0.0 },

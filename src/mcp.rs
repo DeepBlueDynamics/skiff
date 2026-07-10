@@ -172,6 +172,20 @@ async fn call_tool(state: &AppState, name: &str, args: &Value) -> anyhow::Result
             }
             Ok(json!({ "ok": true, "pos": sim.pos, "heading_true_deg": sim.heading_true_deg }).to_string())
         }
+        "set_course" => {
+            let mut sim = state.sim_state.write().unwrap();
+            match num(args, "heading_true_deg") {
+                Some(h) => {
+                    let h = h.rem_euclid(360.0);
+                    sim.ap_heading_deg = Some(h);
+                    Ok(json!({ "course_hold": h, "note": "backend autopilot engaged" }).to_string())
+                }
+                None => {
+                    sim.ap_heading_deg = None;
+                    Ok(json!({ "course_hold": null, "note": "course hold released, manual helm" }).to_string())
+                }
+            }
+        }
         "refuel" => {
             let mut sim = state.sim_state.write().unwrap();
             sim.fuel_port_l = TANK_CAPACITY_L;
@@ -247,6 +261,16 @@ fn tool_definitions() -> Value {
                 "type": "object",
                 "properties": {
                     "heading_true_deg": { "type": "number" }
+                }
+            }
+        },
+        {
+            "name": "set_course",
+            "description": "Engage the backend course-hold: steer to a true heading (works headless, overrides manual helm). Call with no arguments to release back to manual helm.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "heading_true_deg": { "type": "number", "description": "True heading to hold (0-360). Omit to disengage." }
                 }
             }
         },
