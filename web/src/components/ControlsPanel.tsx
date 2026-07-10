@@ -198,12 +198,24 @@ export function ControlsPanel() {
             />
           </label>
           <button
-            onClick={() => {
+            onClick={async () => {
               const lat = parseFloat(latInput);
               const lon = parseFloat(lonInput);
               if (!isNaN(lat) && !isNaN(lon)) {
                 setSetting('gpsLat', lat);
                 setSetting('gpsLon', lon);
+                // Push explicitly — the automatic position sync only runs in
+                // 'real' GPS mode, so Set must do its own POST. The backend
+                // snaps on-land targets to the nearest water.
+                try {
+                  await fetch('/v1/sim/position', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ lat_deg: lat, lon_deg: lon }),
+                  });
+                } catch (e) {
+                  console.error('Failed to set position:', e);
+                }
               }
             }}
             style={{

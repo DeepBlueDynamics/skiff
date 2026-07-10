@@ -151,6 +151,7 @@ pub struct SailWrenchInput {
 struct AppState {
     sim_state: Arc<RwLock<FullSimState>>,
     sail_wrench: Arc<RwLock<Option<StoredSailWrench>>>,
+    land_mask: Arc<Option<skiff::world::LandMask>>,
 }
 
 /// Map stored wrench age → optional override for `cat_step`.
@@ -331,6 +332,7 @@ async fn main() -> anyhow::Result<()> {
     let wrench_for_physics = shared_sail_wrench.clone();
     // Grenada land mask (grounding). None = open-ocean behavior everywhere.
     let land_mask = std::sync::Arc::new(skiff::world::LandMask::load());
+    let land_mask_physics = land_mask.clone();
     tokio::spawn(async move {
         let mut last_tick = tokio::time::Instant::now();
         loop {
@@ -538,7 +540,7 @@ async fn main() -> anyhow::Result<()> {
             // the hull (position held, surge/sway zeroed). Driving back toward
             // water un-grounds naturally — the next candidate step is clear.
             let next_pos = move_latlon(state.pos, over_ground_vec, dt);
-            let grounded = land_mask
+            let grounded = land_mask_physics
                 .as_ref()
                 .as_ref()
                 .map(|m| m.on_land(next_pos.lat_deg, next_pos.lon_deg))
@@ -675,6 +677,7 @@ async fn main() -> anyhow::Result<()> {
     let app_state = AppState {
         sim_state: shared_state,
         sail_wrench: shared_sail_wrench,
+        land_mask: land_mask.clone(),
     };
 
     let static_dir = if std::path::Path::new("skiff/web/dist").exists() {
@@ -749,11 +752,23 @@ async fn post_position(
     State(state): State<AppState>,
     Json(req): Json<SetPositionInput>,
 ) -> Json<FullSimState> {
-    let mut current = state.sim_state.write().unwrap();
-    current.pos = skiff::core::LatLon {
-        lat_deg: req.lat_deg,
-        lon_deg: req.lon_deg,
+    // Never teleport INTO the island: an on-land target would leave the boat
+    // permanently frozen by the grounding check. Snap to the nearest water.
+    let (lat_deg, lon_deg) = match state.land_mask.as_ref() {
+        Some(mask) => mask
+            .nearest_water(req.lat_deg, req.lon_deg, 10_000.0)
+            .unwrap_or((req.lat_deg, req.lon_deg)),
+        None => (req.lat_deg, req.lon_deg),
     };
+    if (lat_deg - req.lat_deg).abs() > 1e-9 || (lon_deg - req.lon_deg).abs() > 1e-9 {
+        tracing::info!(
+            requested = format!("{:.4},{:.4}", req.lat_deg, req.lon_deg),
+            snapped = format!("{:.4},{:.4}", lat_deg, lon_deg),
+            "position request was on land — snapped to nearest water"
+        );
+    }
+    let mut current = state.sim_state.write().unwrap();
+    current.pos = skiff::core::LatLon { lat_deg, lon_deg };
     current.local_pos_m = skiff::core::Vec2Mps::ZERO;
     current.trail = vec![skiff::core::Vec2Mps::ZERO];
     Json(current.clone())
