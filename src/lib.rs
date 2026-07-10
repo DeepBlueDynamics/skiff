@@ -6,3 +6,4 @@ pub mod route;
 pub mod cat_physics;
 pub mod signalk;
 pub mod dto;
+pub mod world;

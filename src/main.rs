@@ -117,6 +117,9 @@ pub struct FullSimState {
     /// 1 = pure cloth wrench, 0 = pure coefficient model.
     #[serde(default)]
     pub sail_blend: f64,
+    /// True while the hull is against the land mask: position frozen, way off.
+    #[serde(default)]
+    pub aground: bool,
 }
 
 /// Fresh cloth wrench is used while younger than this; then blended out over
@@ -183,10 +186,12 @@ fn create_initial_state() -> FullSimState {
     env.wave_period_s = Some(7.0);
     env.wave_to_deg = Some(290.0);
 
-    let initial_heading_rad = 20.0f64.to_radians();
+    // Spawn: Prickly Bay anchorage, ~380 m south of the Spice Island Marine
+    // docks, Grenada. 142 m clearance to the nearest shore in the land mask;
+    // heading 185° points down the bay's exit channel to open water.
+    let initial_heading_rad = 185.0f64.to_radians();
     let cat_state = cat_physics::CatState {
-        // Display heading = (−ψ) mod 360 (same convention as post_reset), so
-        // spawn at display heading 20° means ψ = −20°.
+        // Display heading = (−ψ) mod 360 (same convention as post_reset).
         eta: [0.0, 0.0, 0.0, 0.0, 0.0, -initial_heading_rad],
         nu: [0.0; 6],
         rudder: 0.0,
@@ -197,15 +202,15 @@ fn create_initial_state() -> FullSimState {
         at: Utc::now(),
         elapsed_s: 0.0,
         pos: LatLon {
-            lat_deg: 26.0,
-            lon_deg: -130.0,
+            lat_deg: 12.0010,
+            lon_deg: -61.7640,
         },
         local_pos_m: Vec2Mps::ZERO,
-        heading_true_deg: 20.0,
+        heading_true_deg: 185.0,
         rudder_deg: 0.0,
         stw_mps: 0.0,
         sog_mps: 0.0,
-        cog_true_deg: 20.0,
+        cog_true_deg: 185.0,
         leeway_deg: 0.0,
         heel_deg: 0.0,
         pitch_deg: 0.0,
@@ -232,6 +237,7 @@ fn create_initial_state() -> FullSimState {
         sail_f_body: [0.0; 3],
         sail_tau_cg: [0.0; 3],
         sail_blend: 0.0,
+        aground: false,
     }
 }
 
@@ -319,6 +325,8 @@ async fn main() -> anyhow::Result<()> {
     // Background Thread: Physics Simulation Loop (20Hz - every 50ms)
     let state_for_physics = shared_state.clone();
     let wrench_for_physics = shared_sail_wrench.clone();
+    // Grenada land mask (grounding). None = open-ocean behavior everywhere.
+    let land_mask = std::sync::Arc::new(skiff::world::LandMask::load());
     tokio::spawn(async move {
         let mut last_tick = tokio::time::Instant::now();
         loop {
@@ -521,8 +529,31 @@ async fn main() -> anyhow::Result<()> {
             state.twa_deg = true_wind_angle_deg(state.heading_true_deg, wind_to_deg);
 
             let over_ground_vec = Vec2Mps { east: -ground_world[1], north: ground_world[0] };
-            state.local_pos_m = state.local_pos_m + over_ground_vec * dt;
-            state.pos = move_latlon(state.pos, over_ground_vec, dt);
+            // Grounding: if the next position falls on the land mask, freeze
+            // the hull (position held, surge/sway zeroed). Driving back toward
+            // water un-grounds naturally — the next candidate step is clear.
+            let next_pos = move_latlon(state.pos, over_ground_vec, dt);
+            let grounded = land_mask
+                .as_ref()
+                .as_ref()
+                .map(|m| m.on_land(next_pos.lat_deg, next_pos.lon_deg))
+                .unwrap_or(false);
+            if grounded {
+                if !state.aground {
+                    tracing::warn!(
+                        lat = state.pos.lat_deg,
+                        lon = state.pos.lon_deg,
+                        "AGROUND — hull on the land mask, way stopped"
+                    );
+                }
+                state.aground = true;
+                state.cat_state.nu[0] = 0.0;
+                state.cat_state.nu[1] = 0.0;
+            } else {
+                state.aground = false;
+                state.local_pos_m = state.local_pos_m + over_ground_vec * dt;
+                state.pos = next_pos;
+            }
 
             let local_pos = state.local_pos_m;
             let last_trail = state.trail.last().copied().unwrap_or(Vec2Mps::ZERO);

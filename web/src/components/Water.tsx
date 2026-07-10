@@ -108,6 +108,7 @@ diffuseColor.rgb = mix(diffuseColor.rgb, troughTint, tt * 0.30);
 
 export function Water() {
   const meshRef = useRef<THREE.Mesh>(null);
+  const farFieldRef = useRef<THREE.Mesh>(null);
   const boat = useSimulator((state) => state.boat);
   const settings = useSimulator((state) => state.settings);
 
@@ -217,6 +218,9 @@ export function Water() {
     if (meshRef.current) {
       meshRef.current.position.set(snapX, 0, snapZ);
     }
+    if (farFieldRef.current) {
+      farFieldRef.current.position.set(snapX, -2.6, snapZ);
+    }
 
     const clock = waveClock.current;
     clock.t += Math.min(delta, 0.2);
@@ -243,9 +247,18 @@ export function Water() {
   });
 
   return (
-    <mesh ref={meshRef} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-      <primitive object={geometry} attach="geometry" />
-      <primitive object={material} attach="material" />
-    </mesh>
+    <>
+      <mesh ref={meshRef} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+        <primitive object={geometry} attach="geometry" />
+        <primitive object={material} attach="material" />
+      </mesh>
+      {/* Far-field ocean: the Gerstner plane is 1 km wide, but with land up to
+          ~40 km away the camera sees past its edge. A huge flat quad below
+          wave-trough depth carries the sea to the horizon. */}
+      <mesh ref={farFieldRef} rotation={[-Math.PI / 2, 0, 0]} position={[0, -2.6, 0]}>
+        <planeGeometry args={[120000, 120000]} />
+        <meshStandardMaterial color="#1c4a64" roughness={0.35} metalness={0.08} />
+      </mesh>
+    </>
   );
 }

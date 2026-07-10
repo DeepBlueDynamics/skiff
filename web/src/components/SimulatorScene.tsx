@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, Suspense } from 'react';
 import * as THREE from 'three';
 import { BoatModel } from './BoatModel';
 import { FlowVisualization } from './FlowVisualization';
+import { Island } from './Island';
 import { Trail } from './Trail';
 import { Vectors } from './Vectors';
 import { Water } from './Water';
@@ -27,10 +28,12 @@ export function SimulatorScene() {
   return (
     <Canvas
       shadows
-      camera={{ position: [9, 6.2, 10], fov: 45, near: 0.1, far: 1200 }}
+      camera={{ position: [9, 6.2, 10], fov: 45, near: 0.1, far: 45000 }}
       gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping }}
     >
       <color attach="background" args={['#8fb6c9']} />
+      {/* Distance haze: blends the far-field sea + islands into the horizon */}
+      <fog attach="fog" args={['#8fb6c9', 9000, 42000]} />
       <ambientLight intensity={0.55} />
       <directionalLight
         castShadow
@@ -48,6 +51,7 @@ export function SimulatorScene() {
         <BoatModel />
         <Water />
       </Suspense>
+      <Island />
       <FlowVisualization />
       <Trail />
       {settings.showVectors && <Vectors />}
