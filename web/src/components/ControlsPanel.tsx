@@ -408,6 +408,19 @@ export function ControlsPanel() {
 
         {/* Sail Form + Aerodynamic Wrench moved to SailTelemetryPanel (bottom-left, collapsible) */}
       </ControlGroup>
+      <div className="toggle-row">
+        <label>
+          <input type="checkbox" checked={settings.showVectors} onChange={(e) => setSetting('showVectors', e.target.checked)} />
+          Vectors
+        </label>
+        <label>
+          <input type="checkbox" checked={settings.showCurrent} onChange={(e) => setSetting('showCurrent', e.target.checked)} />
+          Current
+        </label>
+      </div>
+      </Section>
+
+      <Section title="Engines / Autopilot" icon={<Gauge size={15} />} storageKey="skiff.section.engines">
       <ControlGroup icon={<Compass size={16} />} title="Steering">
         <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', marginBottom: '8px', color: 'var(--ink)' }}>
           <input
@@ -495,18 +508,30 @@ export function ControlsPanel() {
         >
           NEUTRAL (0 N)
         </button>
-      </ControlGroup>
 
-      <div className="toggle-row">
-        <label>
-          <input type="checkbox" checked={settings.showVectors} onChange={(e) => setSetting('showVectors', e.target.checked)} />
-          Vectors
-        </label>
-        <label>
-          <input type="checkbox" checked={settings.showCurrent} onChange={(e) => setSetting('showCurrent', e.target.checked)} />
-          Current
-        </label>
-      </div>
+        <hr style={{ border: '0', borderTop: '1px solid rgba(255,255,255,0.08)', margin: '10px 0 8px' }} />
+        {/* Fuel: burn rate at full throttle per engine (Yanmar 4JH45 ≈ 9 L/h),
+            live estimate scales ~power (thrust fraction ^1.5) across both. */}
+        <Slider
+          label="Burn @ max"
+          value={settings.fuelBurnMaxLph}
+          min={2}
+          max={15}
+          step={0.5}
+          unit=" L/h"
+          onChange={(v) => setSetting('fuelBurnMaxLph', v)}
+        />
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: 'var(--ink)', marginTop: '4px', fontFamily: 'monospace' }}>
+          <span style={{ color: 'rgba(255,255,255,0.5)', fontFamily: 'sans-serif' }}>Est. consumption</span>
+          <strong>
+            {(() => {
+              const f = (t: number) => Math.pow(Math.min(1, Math.abs(t) / 3000), 1.5);
+              const lph = settings.fuelBurnMaxLph * (f(input.thrustPort) + f(input.thrustStbd));
+              return `${lph.toFixed(1)} L/h · ${(lph * 0.2642).toFixed(1)} gal/h`;
+            })()}
+          </strong>
+        </div>
+      </ControlGroup>
       </Section>
       <div className="keys">
         <span>A/D steer</span>
