@@ -83,10 +83,6 @@ export function BoatModel() {
     travelerCarNode,
     travelerCarRestY,
     travelerCarQuat,
-    travelerShackleNode,
-    travelerShackleRestY,
-    travelerShackleQuat,
-    travelerSwivels,
     mainsheetLine,
     initialWheelQuaternion,
   } = useMemo(() => {
@@ -128,7 +124,7 @@ export function BoatModel() {
             'object081', 'object025', 'object103',
             // Mainsheet rework: baked rope (105) and the duplicate upper
             // block (074) replaced by a live line tied to Object.077.
-            'object105', 'object074',
+            'object105', 'object074', 'object078',
           ]);
           if (HIDDEN.has(clean)) {
             child.visible = false;
@@ -160,10 +156,38 @@ export function BoatModel() {
     const sailMain = findNode('sail.main');
     const sailJib = findNode('sail.jib');
     const steeringWheel = findNode('steering.wheel');
-    // Traveler car on the arch (Object.104, rest centered at x=0, y≈3.27),
-    // plus the shackled mainsheet block riding it (Object.078).
+    // Traveler car on the arch (Object.104, rest centered at x=0, y≈3.27).
     const travelerCar = findNode('object.104');
-    const travelerShackle = findNode('object.078');
+
+    // Object.078 is the PAIR of mainsheet shackles merged into one mesh
+    // (original hidden above). Split it and mount ONE shackle centered on
+    // the car line — STATIC for now per Kord (no pivot/follow logic yet).
+    {
+      const shackleSrc = findNode('object.078');
+      let shackleMesh: THREE.Mesh | null = null;
+      shackleSrc?.traverse((c) => {
+        if (c instanceof THREE.Mesh && !shackleMesh) shackleMesh = c;
+      });
+      if (shackleMesh) {
+        const sm = shackleMesh as THREE.Mesh;
+        clone.updateMatrixWorld(true);
+        const baked = sm.geometry.clone();
+        baked.applyMatrix4(sm.matrixWorld);
+        const islands = splitConnectedComponents(baked, 4);
+        if (islands.length > 0) {
+          const one = islands[0];
+          one.computeBoundingBox();
+          const bb = one.boundingBox!;
+          one.translate(-(bb.min.x + bb.max.x) / 2, -bb.min.y, -(bb.min.z + bb.max.z) / 2);
+          const m = new THREE.Mesh(one, sm.material);
+          m.castShadow = true;
+          m.name = 'shackle.traveler';
+          m.position.set(0, 3.29, -4.692);
+          m.visible = true;
+          clone.add(m);
+        }
+      }
+    }
 
     // Arch winch: Object.122 is a PAIR of winches — split it and mount ONE
     // copy on the arch at the 076/103 midpoint. (The original pair stays
@@ -190,39 +214,6 @@ export function BoatModel() {
           m.name = 'winch.arch';
           m.position.set(-0.001, 3.247, -4.358);
           clone.add(m);
-        }
-      }
-    }
-
-    // Object.076's fittings, separated into connected components and
-    // remounted as SWIVELS: pivot at each piece's bottom center, riding the
-    // traveler and free to yaw toward the load.
-    const travelerSwivels: THREE.Group[] = [];
-    {
-      const fittingSrc = findNode('object.076');
-      let fittingMesh: THREE.Mesh | null = null;
-      fittingSrc?.traverse((c) => {
-        if (c instanceof THREE.Mesh && !fittingMesh) fittingMesh = c;
-      });
-      if (fittingMesh) {
-        const fm = fittingMesh as THREE.Mesh;
-        clone.updateMatrixWorld(true);
-        const baked = fm.geometry.clone();
-        baked.applyMatrix4(fm.matrixWorld);
-        for (const part of splitConnectedComponents(baked, 8)) {
-          part.computeBoundingBox();
-          const bb = part.boundingBox!;
-          const cx = (bb.min.x + bb.max.x) / 2;
-          const cz = (bb.min.z + bb.max.z) / 2;
-          // Pivot (swivel axis) at the piece's bottom center.
-          part.translate(-cx, -bb.min.y, -cz);
-          const m = new THREE.Mesh(part, fm.material);
-          m.castShadow = true;
-          const pivot = new THREE.Group();
-          pivot.name = `traveler.swivel.${travelerSwivels.length}`;
-          pivot.add(m);
-          clone.add(pivot);
-          travelerSwivels.push(pivot);
         }
       }
     }
@@ -290,12 +281,11 @@ export function BoatModel() {
     wrapper.add(clone);
     const initialWheelQuaternion = steeringWheel ? steeringWheel.quaternion.clone() : new THREE.Quaternion();
     const travelerCarQuat = travelerCar ? travelerCar.quaternion.clone() : new THREE.Quaternion();
-    const travelerShackleQuat = travelerShackle ? travelerShackle.quaternion.clone() : new THREE.Quaternion();
-    return { 
-      formattedScene: wrapper, 
-      rudderPortNode: rudderPort, 
-      rudderStbdNode: rudderStbd, 
-      propPortNode: propPort, 
+    return {
+      formattedScene: wrapper,
+      rudderPortNode: rudderPort,
+      rudderStbdNode: rudderStbd,
+      propPortNode: propPort,
       propStbdNode: propStbd,
       sailMainNode: sailMain,
       sailJibNode: sailJib,
@@ -303,10 +293,6 @@ export function BoatModel() {
       travelerCarNode: travelerCar,
       travelerCarRestY: travelerCar ? travelerCar.position.y : 3.273,
       travelerCarQuat,
-      travelerShackleNode: travelerShackle,
-      travelerShackleRestY: travelerShackle ? travelerShackle.position.y : 3.378,
-      travelerShackleQuat,
-      travelerSwivels,
       mainsheetLine,
       initialWheelQuaternion
     };
@@ -359,28 +345,10 @@ export function BoatModel() {
         travelerCarNode.position.y = travelerCarRestY + sag;
         travelerCarNode.quaternion.copy(_tiltQuat).multiply(travelerCarQuat);
       }
-      // The mainsheet block shackled onto the car (Object.078) rides along.
-      if (travelerShackleNode) {
-        travelerShackleNode.position.x = carX;
-        travelerShackleNode.position.y = travelerShackleRestY + sag;
-        travelerShackleNode.quaternion.copy(_tiltQuat).multiply(travelerShackleQuat);
-      }
-      // Separated Object.076 fittings (shackle + ring): each swivels on its
-      // bottom pivot, mounted ON the car (same z), yawing toward the load,
-      // tipping with the rail.
-      if (travelerSwivels.length > 0) {
-        const n = travelerSwivels.length;
-        for (let i = 0; i < n; i++) {
-          const sv = travelerSwivels[i];
-          const side = (i - (n - 1) / 2) * 0.12;
-          const x = carX + side;
-          sv.position.set(x, travelerCarRestY + 0.035 + sag, -4.689);
-          _yawQuat.setFromAxisAngle(AXIS_Y_LOCAL, Math.atan2(-x, 0.09));
-          sv.quaternion.copy(_tiltQuat).multiply(_yawQuat);
-        }
-      }
+      // (Shackle/ring swivel logic removed per Kord — the single 078-derived
+      // shackle sits static mid-track; no animation on it yet.)
       // Live mainsheet line: tied to Object.077's block (0, 4.34, −4.73) at
-      // the top, following the traveler shackle at the bottom.
+      // the top, following the traveler car at the bottom.
       if (mainsheetLine) {
         const topX = -0.002, topY = 4.34, topZ = -4.731;
         const botX = carX, botY = travelerCarRestY + 0.09 + sag, botZ = -4.689;
