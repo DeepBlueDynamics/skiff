@@ -456,32 +456,13 @@ export function SpinnakerSail() {
     };
   }, []);
 
-  // Align the boat downwind BEFORE the cloth's first step — ONLY on a
-  // genuinely fresh sim (backend just booted). A remount (leaving the view
-  // and coming back) must never yank a running boat around.
-  const alignedReady = useRef(false);
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch('/v1/sim/state');
-        if (res.ok) {
-          const st = await res.json();
-          if ((st.elapsed_s ?? Infinity) < 10) {
-            const windTo = useSimulator.getState().settings.windToDeg ?? 150;
-            await fetch('/v1/sim/reset', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ heading_true_deg: windTo }),
-            });
-          }
-        }
-      } catch {
-        // backend unreachable — never block the cloth
-      } finally {
-        alignedReady.current = true;
-      }
-    })();
-  }, []);
+  // The old mount-time "align the boat downwind" reset is GONE: it fired on
+  // any page load while the backend was <10 s old — i.e. every Cloud Run
+  // cold start and every local restart — silently teleporting the boat out
+  // of the Prickly Bay anchorage. The cloth initializes fine from any
+  // heading now (proven by the shape-gate endurance runs), and the backend
+  // owns the spawn.
+  const alignedReady = useRef(true);
 
   // Update physics at 60fps
   useFrame((state, delta) => {

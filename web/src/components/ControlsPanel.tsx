@@ -323,6 +323,34 @@ export function ControlsPanel() {
       </ControlGroup>
 
       <ControlGroup icon={<Sailboat size={16} />} title="Sail Rig">
+        {/* Headsail: which side she's sheeted (flipping gybes the live sail)
+            and which sail is hoisted. The current cloth is the code zero:
+            122 m² flown, 4.2 m camber, masthead to the bowsprit ring. */}
+        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--ink)', marginBottom: '6px' }}>
+          <span style={{ marginRight: 'auto', fontWeight: 600 }}>Headsail</span>
+          <SideToggle
+            value={settings.sheetSide}
+            onChange={(side) => setSetting('sheetSide', side)}
+          />
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--ink)', marginBottom: '10px' }}>
+          <span style={{ marginRight: 'auto' }}>Type</span>
+          <select
+            value={settings.headsailType}
+            onChange={(e) => setSetting('headsailType', e.target.value as any)}
+            style={{
+              background: 'rgba(0,0,0,0.35)',
+              color: 'var(--ink)',
+              border: '1px solid rgba(255,255,255,0.15)',
+              borderRadius: '5px',
+              padding: '3px 8px',
+              fontSize: '12px',
+              cursor: 'pointer',
+            }}
+          >
+            <option value="codezero">Code Zero</option>
+          </select>
+        </label>
         <Slider
           label="Sheet"
           value={settings.spinnakerClewSlack}
@@ -359,13 +387,6 @@ export function ControlsPanel() {
               onChange={(e) => setSetting('luffPinned', e.target.checked)}
             />
             Luff pin
-          </label>
-          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: 'var(--ink)' }}>
-            <span style={{ marginRight: 'auto' }}>Sheet</span>
-            <SideToggle
-              value={settings.sheetSide}
-              onChange={(side) => setSetting('sheetSide', side)}
-            />
           </label>
           <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: 'var(--ink)' }}>
             <input
@@ -475,7 +496,6 @@ export function ControlsPanel() {
           NEUTRAL (0 N)
         </button>
       </ControlGroup>
-      </Section>
 
       <div className="toggle-row">
         <label>
@@ -487,6 +507,7 @@ export function ControlsPanel() {
           Current
         </label>
       </div>
+      </Section>
       <div className="keys">
         <span>A/D steer</span>
         <span>W/S trim</span>
@@ -511,8 +532,9 @@ function Section({
   children: React.ReactNode;
 }) {
   const [open, setOpen] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return true;
-    return window.localStorage.getItem(storageKey) !== '0';
+    // Default COLLAPSED; remembers whatever the user last chose.
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(storageKey) === '1';
   });
   const toggle = () => {
     setOpen((o) => {

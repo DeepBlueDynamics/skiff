@@ -31,9 +31,11 @@ input {
   top: 12px;
   left: 12px;
   display: grid;
-  grid-template-columns: repeat(2, minmax(126px, 1fr));
-  gap: 7px;
-  width: min(420px, calc(100vw - 24px));
+  /* all boat data in a single column down the left side */
+  grid-template-columns: 1fr;
+  gap: 6px;
+  width: min(205px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
   pointer-events: none;
 }
 

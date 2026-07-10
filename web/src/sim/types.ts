@@ -70,6 +70,8 @@ export type SimSettings = {
   spinnakerClewSlack: number;
   luffPinned: boolean;
   sheetSide: 'port' | 'starboard';
+  /** Which headsail is bent on. The current cloth mesh is the code zero. */
+  headsailType: 'codezero';
   showForceArrows: boolean;
   pressureShading: boolean;
   showRigPoints: boolean;
