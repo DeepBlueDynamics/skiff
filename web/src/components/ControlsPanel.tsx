@@ -290,7 +290,7 @@ export function ControlsPanel() {
       </div>
       </Section>
 
-      <Section title="Boat" icon={<Sailboat size={15} />} storageKey="skiff.section.boat">
+      <Section title="Sails" icon={<Sailboat size={15} />} storageKey="skiff.section.sails">
       <ControlGroup icon={<SlidersHorizontal size={16} />} title="Sail">
         <Slider label="Trim" value={boat.sailTrim} min={0} max={1} step={0.01} unit="" onChange={(v) => setBoat({ ...boat, sailTrim: v })} />
         {/* Traveler car: negative = port, positive = starboard; rotates the
@@ -322,19 +322,6 @@ export function ControlsPanel() {
           />
           Show Rig Points
         </label>
-      </ControlGroup>
-
-      <ControlGroup icon={<Sailboat size={16} />} title="Boat">
-        {/* Displacement multiplier — backend scales mass + rotational inertias */}
-        <Slider
-          label="Mass"
-          value={settings.massScalePct}
-          min={50}
-          max={250}
-          step={5}
-          unit="%"
-          onChange={(v) => setSetting('massScalePct', v)}
-        />
       </ControlGroup>
 
       <ControlGroup icon={<Sailboat size={16} />} title="Sail Rig">
@@ -417,7 +404,7 @@ export function ControlsPanel() {
       </ControlGroup>
       </Section>
 
-      <Section title="Engines / Autopilot" icon={<Gauge size={15} />} storageKey="skiff.section.engines">
+      <Section title="Boat" icon={<Gauge size={15} />} storageKey="skiff.section.boat2">
       <ControlGroup icon={<Compass size={16} />} title="Steering">
         <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', marginBottom: '8px', color: 'var(--ink)' }}>
           <input
@@ -523,17 +510,6 @@ export function ControlsPanel() {
         </button>
 
         <hr style={{ border: '0', borderTop: '1px solid rgba(255,255,255,0.08)', margin: '10px 0 8px' }} />
-        {/* Fuel: burn rate at full throttle per engine (Yanmar 4JH45 ≈ 9 L/h),
-            live estimate scales ~power (thrust fraction ^1.5) across both. */}
-        <Slider
-          label="Burn @ max"
-          value={settings.fuelBurnMaxLph}
-          min={2}
-          max={15}
-          step={0.5}
-          unit=" L/h"
-          onChange={(v) => setSetting('fuelBurnMaxLph', v)}
-        />
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: 'var(--ink)', marginTop: '4px', fontFamily: 'monospace' }}>
           <span style={{ color: 'rgba(255,255,255,0.5)', fontFamily: 'sans-serif' }}>Est. consumption</span>
           <strong>
@@ -586,6 +562,29 @@ export function ControlsPanel() {
         >
           FILL TANKS (2 × 275 L)
         </button>
+      </ControlGroup>
+
+      <ControlGroup icon={<SlidersHorizontal size={16} />} title="Config">
+        {/* Displacement multiplier — backend scales mass + rotational inertias */}
+        <Slider
+          label="Mass"
+          value={settings.massScalePct}
+          min={50}
+          max={250}
+          step={5}
+          unit="%"
+          onChange={(v) => setSetting('massScalePct', v)}
+        />
+        {/* Full-throttle burn per engine (Yanmar 4JH45 ≈ 9 L/h) */}
+        <Slider
+          label="Burn @ max"
+          value={settings.fuelBurnMaxLph}
+          min={2}
+          max={15}
+          step={0.5}
+          unit=" L/h"
+          onChange={(v) => setSetting('fuelBurnMaxLph', v)}
+        />
       </ControlGroup>
       </Section>
       <div className="keys">
