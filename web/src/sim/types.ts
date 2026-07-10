@@ -42,6 +42,8 @@ export type BoatState = {
    *  local accumulator, or the water surface drifts out of sync with the
    *  boat's backend-computed heave/pitch/roll. */
   simTimeS?: number;
+  /** True while live Meridian environment data is flowing into the backend. */
+  envLive?: boolean;
 };
 
 export type SimSettings = {

@@ -16,8 +16,8 @@ use tracing_subscriber::EnvFilter;
 use skiff::boat::classify_course;
 use skiff::core::{LatLon, Vec2Mps, move_latlon, true_wind_angle_deg};
 use skiff::env::{
-    ConstantEnvironment, EnvBatchRequest, EnvQueryPoint, EnvironmentProvider, HttpEnvironmentProvider,
-    MetOcean, NutsAuthClient, test_env, wind_over_water,
+    EnvBatchRequest, EnvQueryPoint, EnvironmentProvider, HttpEnvironmentProvider,
+    MetOcean, test_env, wind_over_water,
 };
 use skiff::cat_physics;
 use skiff::signalk::{SignalKClient, SignalKDelta, SignalKUpdate, SignalKSource, SignalKPathValue};
@@ -54,6 +54,16 @@ pub struct SetEnvironmentInput {
     pub wave_height_m: Option<f64>,
     pub wave_period_s: Option<f64>,
     pub wave_to_deg: Option<f64>,
+    /// true (default) = user's manual slider push: pauses the live Meridian
+    /// weather loop. false = automated weather push (browser Open-Meteo in
+    /// real mode): applies values without pausing Meridian, so live wind and
+    /// browser-sourced waves/current can coexist.
+    #[serde(default = "default_true")]
+    pub manual: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,6 +133,10 @@ pub struct FullSimState {
     /// True while the hull is against the land mask: position frozen, way off.
     #[serde(default)]
     pub aground: bool,
+    /// True while live Meridian environment data is flowing (signed in, not
+    /// manually overridden, and the last fetch applied at least one field).
+    #[serde(default)]
+    pub env_live: bool,
 }
 
 /// Fresh cloth wrench is used while younger than this; then blended out over
@@ -152,6 +166,7 @@ struct AppState {
     sim_state: Arc<RwLock<FullSimState>>,
     sail_wrench: Arc<RwLock<Option<StoredSailWrench>>>,
     land_mask: Arc<Option<skiff::world::LandMask>>,
+    user_token: Arc<tokio::sync::RwLock<Option<String>>>,
 }
 
 /// Map stored wrench age → optional override for `cat_step`.
@@ -243,6 +258,7 @@ fn create_initial_state() -> FullSimState {
         sail_tau_cg: [0.0; 3],
         sail_blend: 0.0,
         aground: false,
+        env_live: false,
     }
 }
 
@@ -256,9 +272,6 @@ async fn main() -> anyhow::Result<()> {
     let sk_host = std::env::var("SIGNALK_HOST").ok();
     let sk_token = std::env::var("SIGNALK_TOKEN").ok();
     let meridian_url = std::env::var("MERIDIAN_URL").unwrap_or_else(|_| "https://meridian.deepbluedynamics.com".to_string());
-    let meridian_client_id = std::env::var("MERIDIAN_CLIENT_ID").ok();
-    let meridian_client_secret = std::env::var("MERIDIAN_CLIENT_SECRET").ok();
-    let auth_url = std::env::var("NUTS_AUTH_URL").unwrap_or_else(|_| "https://auth.nuts.services/auth".to_string());
 
     tracing::info!("Starting Sailing Simulator Backend...");
     tracing::info!("Meridian Service URL: {meridian_url}");
@@ -271,21 +284,14 @@ async fn main() -> anyhow::Result<()> {
     let shared_state = Arc::new(RwLock::new(create_initial_state()));
     let shared_sail_wrench: Arc<RwLock<Option<StoredSailWrench>>> = Arc::new(RwLock::new(None));
 
-    // Instantiate environment provider
-    let env_provider: Arc<dyn EnvironmentProvider> = if let (Some(client_id), Some(client_secret)) = (meridian_client_id, meridian_client_secret) {
-        tracing::info!("Authenticating Meridian API via Nuts Auth: {auth_url}");
-        let auth = NutsAuthClient::new(client_id, client_secret, auth_url);
-        Arc::new(HttpEnvironmentProvider::new(meridian_url, Some(auth)))
-    } else {
-        tracing::warn!("Meridian API credentials missing. Falling back to constant environment.");
-        let mut initial_env = test_env();
-        initial_env.wind_ground_mps = Vec2Mps::from_speed_to_deg(7.2, 150.0);
-        initial_env.current_ground_mps = Vec2Mps::from_speed_to_deg(0.55, 85.0);
-        initial_env.wave_height_m = Some(0.0);
-        initial_env.wave_period_s = Some(7.0);
-        initial_env.wave_to_deg = Some(290.0);
-        Arc::new(ConstantEnvironment { sample: initial_env })
-    };
+    // Meridian environment provider, authenticated by the USER's login JWT
+    // (browser flow via auth.nuts.services → POST /v1/auth/token → here).
+    // There is no machine client-credentials flow in nuts-auth; the old
+    // MERIDIAN_CLIENT_ID/SECRET path targeted an exchange that never existed.
+    let user_token: Arc<tokio::sync::RwLock<Option<String>>> =
+        Arc::new(tokio::sync::RwLock::new(std::env::var("MERIDIAN_USER_TOKEN").ok()));
+    let env_provider: Arc<dyn EnvironmentProvider> =
+        Arc::new(HttpEnvironmentProvider::new(meridian_url, user_token.clone()));
 
     // Instantiate Signal K Client
     let sk_client = sk_host.map(|host| SignalKClient::new(host, sk_token));
@@ -293,9 +299,21 @@ async fn main() -> anyhow::Result<()> {
     // Background Thread: Weather Fetching Loop (Every 30 seconds)
     let state_for_weather = shared_state.clone();
     let env_provider_for_weather = env_provider.clone();
+    let user_token_weather = user_token.clone();
     tokio::spawn(async move {
+        let mut warned_no_token = false;
         loop {
             tokio::time::sleep(Duration::from_secs(30)).await;
+            if user_token_weather.read().await.is_none() {
+                if !warned_no_token {
+                    tracing::info!("No Meridian login token — live weather paused (sign in from the web UI)");
+                    warned_no_token = true;
+                }
+                let mut state = state_for_weather.write().unwrap();
+                state.env_live = false;
+                continue;
+            }
+            warned_no_token = false;
             let (current_pos, is_overridden) = {
                 let state = state_for_weather.read().unwrap();
                 (state.pos, state.manual_env_override)
@@ -316,12 +334,33 @@ async fn main() -> anyhow::Result<()> {
                 Ok(mut samples) => {
                     if let Some(sample) = samples.pop() {
                         tracing::info!("Successfully fetched environment updates. Wind: {} m/s, Current: {} m/s", sample.wind_ground_mps.magnitude(), sample.current_ground_mps.magnitude());
+                        // MERGE, don't clobber: meridian serves /weather/wind
+                        // today; /ocean/current and /weather/wave are planned.
+                        // A field that came back absent/zero must not zero out
+                        // whatever the user has set manually.
                         let mut state = state_for_weather.write().unwrap();
-                        state.env = sample;
+                        let mut any = false;
+                        if sample.wind_ground_mps.magnitude() > 0.01 {
+                            state.env.wind_ground_mps = sample.wind_ground_mps;
+                            any = true;
+                        }
+                        if sample.current_ground_mps.magnitude() > 0.005 {
+                            state.env.current_ground_mps = sample.current_ground_mps;
+                            any = true;
+                        }
+                        if sample.wave_height_m.is_some() {
+                            state.env.wave_height_m = sample.wave_height_m;
+                            state.env.wave_period_s = sample.wave_period_s;
+                            state.env.wave_to_deg = sample.wave_to_deg;
+                            any = true;
+                        }
+                        state.env_live = any;
                     }
                 }
                 Err(e) => {
                     tracing::error!("Failed to fetch environment updates from Meridian Service: {e}");
+                    let mut state = state_for_weather.write().unwrap();
+                    state.env_live = false;
                 }
             }
         }
@@ -678,6 +717,7 @@ async fn main() -> anyhow::Result<()> {
         sim_state: shared_state,
         sail_wrench: shared_sail_wrench,
         land_mask: land_mask.clone(),
+        user_token: user_token.clone(),
     };
 
     let static_dir = if std::path::Path::new("skiff/web/dist").exists() {
@@ -700,6 +740,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/sim/position", post(post_position))
         .route("/v1/sim/reset", post(post_reset))
         .route("/v1/sim/sail_wrench", post(post_sail_wrench))
+        .route("/v1/auth/token", post(post_auth_token))
+        .route("/v1/auth/logout", post(post_auth_logout))
         // precompressed_gzip: serves foo.gz with Content-Encoding when present —
         // the 42 MB hull GLB exceeds Cloud Run's 32 MB HTTP/1 response cap,
         // but its .gz (27 MB) fits. Browsers always send Accept-Encoding: gzip.
@@ -744,8 +786,44 @@ async fn post_environment(
     current.env.wave_height_m = req.wave_height_m;
     current.env.wave_period_s = req.wave_period_s;
     current.env.wave_to_deg = req.wave_to_deg;
-    current.manual_env_override = true;
+    if req.manual {
+        current.manual_env_override = true;
+    }
     Json(current.clone())
+}
+
+#[derive(Debug, Deserialize)]
+struct AuthTokenInput {
+    token: String,
+}
+
+/// Store the user's Meridian/Nuts JWT (from the browser login flow) so the
+/// weather loop can query Meridian on their behalf. Also clears the manual
+/// environment override — posting a token is an explicit "go live" action.
+async fn post_auth_token(
+    State(state): State<AppState>,
+    Json(req): Json<AuthTokenInput>,
+) -> Json<serde_json::Value> {
+    if req.token.split('.').count() != 3 || req.token.len() < 20 {
+        return Json(serde_json::json!({ "ok": false, "error": "not a JWT" }));
+    }
+    *state.user_token.write().await = Some(req.token);
+    {
+        let mut sim = state.sim_state.write().unwrap();
+        sim.manual_env_override = false;
+    }
+    tracing::info!("Meridian user token installed — live weather enabled");
+    Json(serde_json::json!({ "ok": true }))
+}
+
+async fn post_auth_logout(State(state): State<AppState>) -> Json<serde_json::Value> {
+    *state.user_token.write().await = None;
+    {
+        let mut sim = state.sim_state.write().unwrap();
+        sim.env_live = false;
+    }
+    tracing::info!("Meridian user token cleared");
+    Json(serde_json::json!({ "ok": true }))
 }
 
 async fn post_position(

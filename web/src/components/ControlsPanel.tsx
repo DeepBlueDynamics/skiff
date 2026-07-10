@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { Anchor, RotateCcw, Sailboat, SlidersHorizontal, Waves, Wind, MapPin, Compass, Gauge } from 'lucide-react';
+import { Anchor, ChevronDown, ChevronRight, RotateCcw, Sailboat, SlidersHorizontal, Waves, Wind, MapPin, Compass, Gauge } from 'lucide-react';
 import { useSimulator } from '../sim/store';
+import { signIn, storedToken } from '../sim/auth';
 
 export function ControlsPanel() {
   const settings = useSimulator((state) => state.settings);
@@ -120,10 +121,19 @@ export function ControlsPanel() {
         </div>
       )}
 
+      <Section title="Environment" icon={<Wind size={15} />} storageKey="skiff.section.env">
       <ControlGroup icon={<MapPin size={16} />} title="GPS / Data Source">
         <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
           <button
-            onClick={() => setSetting('dataSource', 'real')}
+            onClick={() => {
+              // Real data needs a Meridian login — kick off the flow if the
+              // user isn't signed in yet; the callback returns to this page.
+              if (!storedToken()) {
+                signIn();
+                return;
+              }
+              setSetting('dataSource', 'real');
+            }}
             style={{
               flex: 1,
               padding: '6px 8px',
@@ -264,6 +274,9 @@ export function ControlsPanel() {
           </ControlGroup>
         </>
       )}
+      </Section>
+
+      <Section title="Boat" icon={<Sailboat size={15} />} storageKey="skiff.section.boat">
       <ControlGroup icon={<SlidersHorizontal size={16} />} title="Sail">
         <Slider label="Trim" value={boat.sailTrim} min={0} max={1} step={0.01} unit="" onChange={(v) => setBoat({ ...boat, sailTrim: v })} />
         {/* Traveler car: negative = port, positive = starboard; rotates the
@@ -462,6 +475,8 @@ export function ControlsPanel() {
           NEUTRAL (0 N)
         </button>
       </ControlGroup>
+      </Section>
+
       <div className="toggle-row">
         <label>
           <input type="checkbox" checked={settings.showVectors} onChange={(e) => setSetting('showVectors', e.target.checked)} />
@@ -479,6 +494,61 @@ export function ControlsPanel() {
         <span>R reset</span>
       </div>
     </aside>
+  );
+}
+
+/** Top-level pull-down section (Environment / Boat): collapsible group of
+ *  control groups, open state persisted per section. */
+function Section({
+  title,
+  icon,
+  storageKey,
+  children,
+}: {
+  title: string;
+  icon: React.ReactNode;
+  storageKey: string;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true;
+    return window.localStorage.getItem(storageKey) !== '0';
+  });
+  const toggle = () => {
+    setOpen((o) => {
+      try {
+        window.localStorage.setItem(storageKey, o ? '0' : '1');
+      } catch {}
+      return !o;
+    });
+  };
+  return (
+    <div style={{ marginBottom: '10px' }}>
+      <button
+        onClick={toggle}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+          width: '100%',
+          padding: '7px 10px',
+          background: 'rgba(255,255,255,0.06)',
+          border: '1px solid rgba(255,255,255,0.1)',
+          borderRadius: '8px',
+          color: 'var(--ink)',
+          cursor: 'pointer',
+          fontSize: '12px',
+          fontWeight: 700,
+          textTransform: 'uppercase',
+          letterSpacing: '0.08em',
+        }}
+      >
+        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        {icon}
+        {title}
+      </button>
+      {open && <div style={{ marginTop: '8px' }}>{children}</div>}
+    </div>
   );
 }
 

@@ -1,3 +1,4 @@
+import { AuthButton } from './components/AuthButton';
 import { ControlsPanel } from './components/ControlsPanel';
 import { Hud } from './components/Hud';
 import { KeyboardControls } from './components/KeyboardControls';
@@ -10,6 +11,7 @@ export default function App() {
       <KeyboardControls />
       <SimulatorScene />
       <Hud />
+      <AuthButton />
       <ControlsPanel />
       <SailTelemetryPanel />
     </main>

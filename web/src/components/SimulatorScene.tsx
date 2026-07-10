@@ -156,6 +156,7 @@ function SimulationLoop({ controlsRef }: { controlsRef: React.RefObject<any> }) 
                 wave_height_m: weather.waveHeightM,
                 wave_period_s: weather.wavePeriodS,
                 wave_to_deg: weather.waveToDeg,
+                manual: false,
               }),
             });
           } catch (e) {
@@ -192,6 +193,7 @@ function SimulationLoop({ controlsRef }: { controlsRef: React.RefObject<any> }) 
                 wave_height_m: weather.waveHeightM,
                 wave_period_s: weather.wavePeriodS,
                 wave_to_deg: weather.waveToDeg,
+                manual: false,
               }),
             });
           } catch (e) {}
@@ -334,6 +336,7 @@ function SimulationLoop({ controlsRef }: { controlsRef: React.RefObject<any> }) 
           stabilityState: data.stability_state,
           slamWarning: data.slam_warning,
           simTimeS: data.elapsed_s,
+          envLive: data.env_live,
         });
       }
     } catch (e) {

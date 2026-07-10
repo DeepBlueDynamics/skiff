@@ -263,23 +263,26 @@ impl NutsAuthClient {
 
 pub struct HttpEnvironmentProvider {
     pub base_url: String,
-    pub auth: Option<NutsAuthClient>,
+    /// User JWT from the browser login flow (auth.nuts.services), pushed in
+    /// via POST /v1/auth/token. Meridian validates it against its JWKS.
+    /// None = unauthenticated; requests go out bare and protected endpoints
+    /// will 401 (callers treat per-field failures as absent data).
+    pub user_token: Arc<tokio::sync::RwLock<Option<String>>>,
     client: reqwest::Client,
 }
 
 impl HttpEnvironmentProvider {
-    pub fn new(base_url: String, auth: Option<NutsAuthClient>) -> Self {
+    pub fn new(base_url: String, user_token: Arc<tokio::sync::RwLock<Option<String>>>) -> Self {
         Self {
             base_url,
-            auth,
+            user_token,
             client: reqwest::Client::new(),
         }
     }
 
     async fn get_headers(&self) -> Result<HeaderMap> {
         let mut headers = HeaderMap::new();
-        if let Some(auth) = &self.auth {
-            let token = auth.get_token().await?;
+        if let Some(token) = self.user_token.read().await.as_ref() {
             headers.insert(
                 AUTHORIZATION,
                 HeaderValue::from_str(&format!("Bearer {token}"))?,
