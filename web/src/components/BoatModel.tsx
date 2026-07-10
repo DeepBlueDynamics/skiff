@@ -66,8 +66,6 @@ export function BoatModel() {
   // Keep track of accumulated propeller angles to ensure smooth rotation
   const propPortAngle = useRef(0);
   const propStbdAngle = useRef(0);
-  // Last car offset applied to the mainsheet rope (skip rewrites when idle)
-  const lastRopeCarX = useRef(0);
 
   // Load the GLB file from the public directory
   const { scene } = useGLTF('/lagoon-450s.glb');
@@ -89,7 +87,7 @@ export function BoatModel() {
     travelerShackleRestY,
     travelerShackleQuat,
     travelerSwivels,
-    mainsheetRope,
+    mainsheetLine,
     initialWheelQuaternion,
   } = useMemo(() => {
     const clone = scene.clone();
@@ -128,6 +126,9 @@ export function BoatModel() {
             'object515', 'object113', 'object540',
             'object080', 'object056', 'object024', 'object076',
             'object081', 'object025', 'object103',
+            // Mainsheet rework: baked rope (105) and the duplicate upper
+            // block (074) replaced by a live line tied to Object.077.
+            'object105', 'object074',
           ]);
           if (HIDDEN.has(clean)) {
             child.visible = false;
@@ -226,33 +227,16 @@ export function BoatModel() {
       }
     }
 
-    // Mainsheet rope (Object.105): one baked mesh running car → boom blocks →
-    // forward along the boom. The tackle section between the car and the boom
-    // must follow the car athwartships while the boom run stays put, so bake
-    // the geometry into the boat frame once and shear tackle-zone vertices at
-    // runtime (weight falls off with height toward the boom sheaves and with
-    // distance forward of the traveler track).
-    let mainsheetRope: { attr: THREE.BufferAttribute; base: Float32Array } | null = null;
-    const ropeNode = findNode('object.105');
-    if (ropeNode) {
-      let ropeMesh: THREE.Mesh | null = null;
-      ropeNode.traverse((c) => {
-        if (c instanceof THREE.Mesh && !ropeMesh) ropeMesh = c;
-      });
-      if (ropeMesh) {
-        const rm = ropeMesh as THREE.Mesh;
-        clone.updateMatrixWorld(true);
-        const baked = rm.geometry.clone();
-        baked.applyMatrix4(rm.matrixWorld);
-        rm.geometry = baked;
-        rm.position.set(0, 0, 0);
-        rm.quaternion.identity();
-        rm.scale.set(1, 1, 1);
-        clone.add(rm); // reparent to root; transform now baked into vertices
-        const attr = baked.getAttribute('position') as THREE.BufferAttribute;
-        mainsheetRope = { attr, base: Float32Array.from(attr.array as Float32Array) };
-      }
-    }
+    // Live mainsheet: one line TIED to Object.077 (the boom-end block at
+    // (0, 4.44, −4.73)), other end following the traveler shackle. Replaces
+    // the baked Object.105 rope (hidden above).
+    const mainsheetLine = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.012, 0.012, 1, 6),
+      new THREE.MeshStandardMaterial({ color: 0x24272d, roughness: 0.85 })
+    );
+    mainsheetLine.name = 'mainsheet.line';
+    mainsheetLine.castShadow = true;
+    clone.add(mainsheetLine);
  
     // Log the found nodes for debugging
     console.log('Catamaran rigged nodes lookup:', {
@@ -323,7 +307,7 @@ export function BoatModel() {
       travelerShackleRestY: travelerShackle ? travelerShackle.position.y : 3.378,
       travelerShackleQuat,
       travelerSwivels,
-      mainsheetRope,
+      mainsheetLine,
       initialWheelQuaternion
     };
   }, [scene]);
@@ -395,21 +379,17 @@ export function BoatModel() {
           sv.quaternion.copy(_tiltQuat).multiply(_yawQuat);
         }
       }
-      // Shear the mainsheet rope's tackle section toward the car. Weights:
-      // full at car height (y ≤ 3.45) fading to zero at the boom sheaves
-      // (y ≥ 4.65), and confined to the traveler zone (z ≤ −4 full, −3.4 off).
-      if (mainsheetRope && lastRopeCarX.current !== carX) {
-        lastRopeCarX.current = carX;
-        const { attr, base } = mainsheetRope;
-        const arr = attr.array as Float32Array;
-        for (let i = 0; i < arr.length; i += 3) {
-          const y = base[i + 1];
-          const z = base[i + 2];
-          const wy = Math.min(1, Math.max(0, (4.65 - y) / (4.65 - 3.45)));
-          const wz = Math.min(1, Math.max(0, (-3.4 - z) / 0.6));
-          arr[i] = base[i] + wy * wz * carX;
-        }
-        attr.needsUpdate = true;
+      // Live mainsheet line: tied to Object.077's block (0, 4.34, −4.73) at
+      // the top, following the traveler shackle at the bottom.
+      if (mainsheetLine) {
+        const topX = -0.002, topY = 4.34, topZ = -4.731;
+        const botX = carX, botY = travelerCarRestY + 0.09 + sag, botZ = -4.689;
+        const dx = topX - botX, dy = topY - botY, dz = topZ - botZ;
+        const len = Math.max(0.05, Math.hypot(dx, dy, dz));
+        mainsheetLine.position.set((topX + botX) / 2, (topY + botY) / 2, (topZ + botZ) / 2);
+        mainsheetLine.scale.set(1, len, 1);
+        _ropeDir.set(dx / len, dy / len, dz / len);
+        mainsheetLine.quaternion.setFromUnitVectors(AXIS_Y_LOCAL, _ropeDir);
       }
     }
 
@@ -492,6 +472,7 @@ const TILT_AXIS_Z = new THREE.Vector3(0, 0, 1);
 const _tiltQuat = new THREE.Quaternion();
 const _yawQuat = new THREE.Quaternion();
 const AXIS_Y_LOCAL = new THREE.Vector3(0, 1, 0);
+const _ropeDir = new THREE.Vector3();
 // Arch-top camber measured across the FULL arch (Object.003 + neighbors,
 // 8.7k surface points): y(x) = y0 − 0.0265·x² — 13 cm of drop at the track
 // ends. (First fit used only the small Object.095 segment and undershot.)
