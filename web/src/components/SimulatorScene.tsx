@@ -283,6 +283,7 @@ function SimulationLoop({ controlsRef }: { controlsRef: React.RefObject<any> }) 
           thrust_port: input.thrustPort,
           thrust_stbd: input.thrustStbd,
           mass_scale: (settings.massScalePct ?? 100) / 100,
+          traveler: (settings.travelerPct ?? 0) / 100,
         }),
       });
 

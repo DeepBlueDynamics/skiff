@@ -193,6 +193,7 @@ fn run_case(
             sail_trim: sail_trim_to_sheet_rad(sail_trim_01),
             thrust_port: 0.0,
             thrust_stbd: 0.0,
+            traveler: 0.0,
         };
 
         st = cat_step(&st, &ctrl, &env, params, DT, None);

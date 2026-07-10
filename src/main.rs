@@ -36,6 +36,9 @@ pub struct SimControlInput {
     /// mass and hull geometry are unchanged.
     #[serde(default = "default_mass_scale")]
     pub mass_scale: f64,
+    /// Mainsheet traveler car: −1 full port, 0 centered, +1 full starboard.
+    #[serde(default)]
+    pub traveler: f64,
 }
 
 fn default_mass_scale() -> f64 {
@@ -227,6 +230,7 @@ fn create_initial_state() -> FullSimState {
             thrust_port: 0.0,
             thrust_stbd: 0.0,
             mass_scale: 1.0,
+            traveler: 0.0,
         },
         env,
         trail: vec![Vec2Mps::ZERO],
@@ -440,6 +444,7 @@ async fn main() -> anyhow::Result<()> {
                 sail_trim: cat_physics::sail_trim_to_sheet_rad(state.control.sail_trim),
                 thrust_port: state.control.thrust_port,
                 thrust_stbd: state.control.thrust_stbd,
+                traveler: state.control.traveler,
             };
 
             let next_cat_state = cat_physics::cat_step(

@@ -54,6 +54,8 @@ export type SimSettings = {
   waveToDeg: number;
   /** Boat displacement as % of stock (100 = as-built Lagoon 450S). */
   massScalePct: number;
+  /** Mainsheet traveler car: −100 full port … 0 centered … +100 full stbd. */
+  travelerPct: number;
   showCurrent: boolean;
   showVectors: boolean;
   dataSource: 'real' | 'simulated';

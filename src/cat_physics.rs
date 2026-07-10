@@ -84,7 +84,18 @@ pub struct CatControl {
     pub sail_trim: f64,
     pub thrust_port: f64,
     pub thrust_stbd: f64,
+    /// Mainsheet traveler car position, CONTRACT convention: −1 = full port,
+    /// 0 = centered, +1 = full starboard. Biases the boom angle by up to
+    /// ±[`TRAVELER_MAX_RAD`]. Callers pass the user's value directly; the
+    /// engine-frame y-mirror is handled inside `coefficient_sail_wrench`.
+    #[serde(default)]
+    pub traveler: f64,
 }
+
+/// Boom-angle authority of the traveler at full throw. Geometry: the track
+/// half-width is 2.46 m (Object.122 ends at ±2.459) on a 6.05 m boom →
+/// atan(2.46/6.05) ≈ 22°.
+pub const TRAVELER_MAX_RAD: f64 = 0.386;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CatState {
@@ -580,6 +591,14 @@ fn coefficient_sail_wrench(
         // Sheet hard against the wind: boom at trim, same tack as weathervane.
         wv.signum() * trim
     };
+
+    // Traveler: drags the sheeting point athwartships, rotating the boom
+    // toward the car by up to ±TRAVELER_MAX_RAD. Contract +1 = car to
+    // STARBOARD; the engine's lateral axis is the y-mirror of the contract
+    // (see contract_wrench_to_engine), so the sign flips here — engine +y
+    // is display-port. Clamped so the boom can't be dragged past ~88°.
+    let boom = (boom - ctrl.traveler.clamp(-1.0, 1.0) * TRAVELER_MAX_RAD)
+        .clamp(-1.536, 1.536);
 
     let chord = sail_chord_from_boom(boom);
     let f = foil_force_2d(inflow, chord, &p.sail, RHO_AIR);
@@ -1226,6 +1245,7 @@ mod tests {
             sail_trim: sail_trim_to_sheet_rad(0.76),
             thrust_port: 0.0,
             thrust_stbd: 0.0,
+            traveler: 0.0,
         };
         let dt = 0.05;
         let n = (120.0 / dt) as usize;
@@ -1269,6 +1289,7 @@ mod tests {
             sail_trim: sail_trim_to_sheet_rad(0.5),
             thrust_port: 0.0,
             thrust_stbd: 0.0,
+            traveler: 0.0,
         }
     }
 
@@ -1321,6 +1342,48 @@ mod tests {
             bearing_deg > 10.0 && bearing_deg < 170.0,
             "+f_y (starboard by contract) displaced the boat on bearing {bearing_deg}° \
              from heading 0 — expected starboard half-plane (10°..170°); dist {dist} m"
+        );
+    }
+
+    /// The traveler must actually rotate the boom: with a fixed beam wind,
+    /// full-port vs full-starboard car positions must produce materially
+    /// different sail forces (and everything stays finite).
+    #[test]
+    fn traveler_biases_the_boom() {
+        let p = lagoon_450s();
+        let env = Environment {
+            wind_world: [0.0, 6.0, 0.0], // beam wind at heading 0
+            current_world: [0.0; 3],
+            wave_pose: None,
+        };
+        let st = rest_state_heading_zero();
+        let sail_tau = |traveler: f64| {
+            let ctrl = CatControl {
+                rudder_cmd: 0.0,
+                sail_trim: sail_trim_to_sheet_rad(0.9),
+                thrust_port: 0.0,
+                thrust_stbd: 0.0,
+                traveler,
+            };
+            cat_forces(&st, &p, &env, &ctrl, None).0
+        };
+        let port = sail_tau(-1.0);
+        let center = sail_tau(0.0);
+        let stbd = sail_tau(1.0);
+        for w in [&port, &center, &stbd] {
+            assert!(w.iter().all(|v| v.is_finite()));
+        }
+        let d_drive = (port[0] - stbd[0]).abs();
+        let d_side = (port[1] - stbd[1]).abs();
+        assert!(
+            d_drive + d_side > 100.0,
+            "traveler full-port vs full-stbd barely changed the sail force \
+             (Δdrive {d_drive:.1} N, Δside {d_side:.1} N)"
+        );
+        // Centered car must sit between the extremes on at least one axis.
+        assert!(
+            (center[0] - port[0]).abs() < d_drive + 1.0
+                && (center[0] - stbd[0]).abs() < d_drive + 1.0
         );
     }
 

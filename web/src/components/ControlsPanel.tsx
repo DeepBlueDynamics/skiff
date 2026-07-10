@@ -1,7 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Anchor, RotateCcw, Sailboat, SlidersHorizontal, Waves, Wind, MapPin, Compass, Gauge } from 'lucide-react';
 import { useSimulator } from '../sim/store';
-import type { SailFormTelemetry } from './SpinnakerSail';
 
 export function ControlsPanel() {
   const settings = useSimulator((state) => state.settings);
@@ -11,26 +10,6 @@ export function ControlsPanel() {
   const resetBoat = useSimulator((state) => state.resetBoat);
   const setBoat = useSimulator((state) => state.setBoat);
   const setInput = useSimulator((state) => state.setInput);
-  const sailForces = useSimulator((state) => state.sailForces);
-  const [sailForm, setSailForm] = useState<SailFormTelemetry | null>(() => {
-    if (typeof window === 'undefined') return null;
-    return (window as any).__sailDebug?.form ?? null;
-  });
-
-  useEffect(() => {
-    const handleSailForm = (event: Event) => {
-      setSailForm((event as CustomEvent<SailFormTelemetry>).detail);
-    };
-    window.addEventListener('sail-form', handleSailForm);
-    return () => window.removeEventListener('sail-form', handleSailForm);
-  }, []);
-
-  const formatN = (v: number) => {
-    return Math.abs(v) >= 9500 ? `${(v / 1000).toFixed(2)} kN` : `${v.toFixed(0)} N`;
-  };
-  const formatNm = (v: number) => {
-    return Math.abs(v) >= 9500 ? `${(v / 1000).toFixed(2)} kN·m` : `${v.toFixed(0)} N·m`;
-  };
 
   const [latInput, setLatInput] = useState(settings.gpsLat.toString());
   const [lonInput, setLonInput] = useState(settings.gpsLon.toString());
@@ -275,6 +254,9 @@ export function ControlsPanel() {
       )}
       <ControlGroup icon={<SlidersHorizontal size={16} />} title="Sail">
         <Slider label="Trim" value={boat.sailTrim} min={0} max={1} step={0.01} unit="" onChange={(v) => setBoat({ ...boat, sailTrim: v })} />
+        {/* Traveler car: negative = port, positive = starboard; rotates the
+            boom up to ±22° (track geometry, Object.122 ends ±2.46 m) */}
+        <Slider label="Traveler" value={settings.travelerPct} min={-100} max={100} step={5} unit="%" onChange={(v) => setSetting('travelerPct', v)} />
         <Slider label="Reef" value={boat.reef} min={0} max={1} step={0.01} unit="" onChange={(v) => setBoat({ ...boat, reef: v })} />
         <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', marginTop: '6px', color: 'var(--ink)' }}>
           <input
@@ -379,57 +361,7 @@ export function ControlsPanel() {
           </label>
         </div>
 
-        <hr style={{ border: '0', borderTop: '1px solid rgba(255,255,255,0.08)', margin: '12px 0 8px' }} />
-        <div style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'rgba(255,255,255,0.4)', fontWeight: 'bold', marginBottom: '6px' }}>
-          Sail Form
-        </div>
-        <table style={{ width: '100%', fontSize: '12px', borderCollapse: 'collapse', color: 'var(--ink)', fontFamily: 'monospace' }}>
-          <tbody>
-            <TelemetryRow label="Mean strain" value={sailForm ? `${(sailForm.meanStrain * 100).toFixed(2)} %` : '—'} />
-            <TelemetryRow label="Normal coherence" value={sailForm ? sailForm.normalCoherence.toFixed(3) : '—'} />
-            <TelemetryRow label="Fold edges" value={sailForm ? sailForm.foldEdgeCount.toString() : '—'} />
-            <TelemetryRow label="Max rest deviation" value={sailForm ? `${sailForm.maxRestDeviation.toFixed(3)} m` : '—'} />
-            <TelemetryRow label="Luff sag" value={sailForm ? `${sailForm.luffSagM.toFixed(3)} m` : '—'} />
-            <TelemetryRow label="Camber" value={sailForm ? `${sailForm.camberM.toFixed(3)} m` : '—'} />
-          </tbody>
-        </table>
-
-        <hr style={{ border: '0', borderTop: '1px solid rgba(255,255,255,0.08)', margin: '12px 0 8px' }} />
-        <div style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'rgba(255,255,255,0.4)', fontWeight: 'bold', marginBottom: '6px' }}>
-          Aerodynamic Wrench
-        </div>
-        <table style={{ width: '100%', fontSize: '12px', borderCollapse: 'collapse', color: 'var(--ink)', fontFamily: 'monospace' }}>
-          <tbody>
-            <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-              <td style={{ padding: '3px 0', color: 'rgba(255,255,255,0.5)', fontFamily: 'sans-serif' }}>Drive (fwd)</td>
-              <td style={{ textAlign: 'right', fontWeight: 'bold' }}>{formatN(sailForces.f_body[0])}</td>
-            </tr>
-            <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-              <td style={{ padding: '3px 0', color: 'rgba(255,255,255,0.5)', fontFamily: 'sans-serif' }}>Side (stbd)</td>
-              <td style={{ textAlign: 'right', fontWeight: 'bold' }}>{formatN(sailForces.f_body[1])}</td>
-            </tr>
-            <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-              <td style={{ padding: '3px 0', color: 'rgba(255,255,255,0.5)', fontFamily: 'sans-serif' }}>Vertical (up)</td>
-              <td style={{ textAlign: 'right', fontWeight: 'bold' }}>{formatN(-sailForces.f_body[2])}</td>
-            </tr>
-            <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-              <td style={{ padding: '3px 0', color: 'rgba(255,255,255,0.5)', fontFamily: 'sans-serif' }}>|F| Total</td>
-              <td style={{ textAlign: 'right', fontWeight: 'bold' }}>{formatN(Math.sqrt(sailForces.f_body[0]**2 + sailForces.f_body[1]**2 + sailForces.f_body[2]**2))}</td>
-            </tr>
-            <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-              <td style={{ padding: '3px 0', color: 'rgba(255,255,255,0.5)', fontFamily: 'sans-serif' }}>Heel moment</td>
-              <td style={{ textAlign: 'right', fontWeight: 'bold' }}>{formatNm(sailForces.tau_body[0])}</td>
-            </tr>
-            <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-              <td style={{ padding: '3px 0', color: 'rgba(255,255,255,0.5)', fontFamily: 'sans-serif' }}>Pitch moment</td>
-              <td style={{ textAlign: 'right', fontWeight: 'bold' }}>{formatNm(sailForces.tau_body[1])}</td>
-            </tr>
-            <tr>
-              <td style={{ padding: '3px 0', color: 'rgba(255,255,255,0.5)', fontFamily: 'sans-serif' }}>Yaw moment</td>
-              <td style={{ textAlign: 'right', fontWeight: 'bold' }}>{formatNm(sailForces.tau_body[2])}</td>
-            </tr>
-          </tbody>
-        </table>
+        {/* Sail Form + Aerodynamic Wrench moved to SailTelemetryPanel (bottom-left, collapsible) */}
       </ControlGroup>
       <ControlGroup icon={<Compass size={16} />} title="Steering">
         <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', marginBottom: '8px', color: 'var(--ink)' }}>
@@ -548,15 +480,6 @@ function ControlGroup({ icon, title, children }: { icon: React.ReactNode; title:
       </div>
       {children}
     </div>
-  );
-}
-
-function TelemetryRow({ label, value }: { label: string; value: string }) {
-  return (
-    <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-      <td style={{ padding: '3px 0', color: 'rgba(255,255,255,0.5)', fontFamily: 'sans-serif' }}>{label}</td>
-      <td style={{ textAlign: 'right', fontWeight: 'bold' }}>{value}</td>
-    </tr>
   );
 }
 

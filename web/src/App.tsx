@@ -1,6 +1,7 @@
 import { ControlsPanel } from './components/ControlsPanel';
 import { Hud } from './components/Hud';
 import { KeyboardControls } from './components/KeyboardControls';
+import { SailTelemetryPanel } from './components/SailTelemetryPanel';
 import { SimulatorScene } from './components/SimulatorScene';
 
 export default function App() {
@@ -10,6 +11,7 @@ export default function App() {
       <SimulatorScene />
       <Hud />
       <ControlsPanel />
+      <SailTelemetryPanel />
     </main>
   );
 }
