@@ -49,7 +49,7 @@ export const useSimulator = create<SimulatorStore>((set) => ({
     sailFullness: 1.0,
     spinnakerTackSlack: 1.05,
     spinnakerClewSlack: 1.0,
-    luffPinned: true,
+    luffPinned: false, // code zero flies a FREE luff; pinning drags the gybe back
     sheetSide: 'starboard',
     headsailType: 'codezero',
     vangPct: 60,

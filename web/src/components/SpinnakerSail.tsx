@@ -388,6 +388,11 @@ export function SpinnakerSail() {
       clewRope,
       // Mutable — the sheet-side toggle re-points it to the other winch.
       clewAnchor: CLEW_ANCHOR.clone(),
+      // Gybe mirror state: −1 while flying the side OPPOSITE the build side.
+      // Every rest-referencing pin/reset must multiply rest.x by this, or it
+      // silently drags/snaps the sail back to the authored side.
+      buildSide: sheetSide,
+      mirror: 1,
       geometry,
       material,
       sharedEdgesArray,
@@ -415,6 +420,7 @@ export function SpinnakerSail() {
   useEffect(() => {
     if (lastSheetSide.current === sheetSide) return;
     lastSheetSide.current = sheetSide;
+    sim.mirror = sheetSide === sim.buildSide ? 1 : -1;
     sim.clewAnchor.copy(sheetSide === 'port' ? SHEET_LEAD_PORT : SHEET_LEAD_STARBOARD);
     for (const p of sim.parts) {
       p.pos.x = -p.pos.x;
@@ -573,7 +579,7 @@ export function SpinnakerSail() {
     for (const idx of luffNodes) {
       if (luffOn) {
         parts[idx].pinned = true;
-        parts[idx].target.copy(parts[idx].rest);
+        parts[idx].target.set(sim.mirror * parts[idx].rest.x, parts[idx].rest.y, parts[idx].rest.z);
       } else {
         if (idx === headI) {
           parts[idx].pinned = true;
@@ -585,7 +591,7 @@ export function SpinnakerSail() {
 
     // Anchor points are always pinned
     parts[headI].pinned = true;
-    parts[headI].target.copy(parts[headI].rest);
+    parts[headI].target.set(sim.mirror * parts[headI].rest.x, parts[headI].rest.y, parts[headI].rest.z);
     parts[tackRope.anchorIdx].pinned = true;
     parts[tackRope.anchorIdx].target.copy(TACK_ANCHOR);
     parts[clewRope.anchorIdx].pinned = true;
@@ -981,8 +987,8 @@ export function SpinnakerSail() {
     if (hasNan) {
       console.warn('Sail simulation NaN detected — resetting to rest shape');
       for (const p of parts) {
-        p.pos.copy(p.rest);
-        p.prev.copy(p.rest);
+        p.pos.set(sim.mirror * p.rest.x, p.rest.y, p.rest.z);
+        p.prev.copy(p.pos);
         p.force.set(0, 0, 0);
       }
       filteredForce.current.set(0, 0, 0);
@@ -1177,8 +1183,8 @@ export function SpinnakerSail() {
           tangleTimer.current = 0;
           watchdogResetCount.current++;
           for (const p of parts) {
-            p.pos.copy(p.rest);
-            p.prev.copy(p.rest);
+            p.pos.set(sim.mirror * p.rest.x, p.rest.y, p.rest.z);
+            p.prev.copy(p.pos);
             p.force.set(0, 0, 0);
           }
           filteredForce.current.set(0, 0, 0);
