@@ -114,10 +114,14 @@ export function BoatModel() {
         if (child.name && child.name.toLowerCase().includes('sail')) {
           child.visible = false;
         }
-        // Object.515: orphaned 1.3 m rope tube at the stern (old Blender
-        // line from the starboard aft winch that connects to nothing).
-        if (child.name && child.name.replace(/[\._]/g, '').toLowerCase() === 'object515') {
-          child.visible = false;
+        // Orphaned Blender rope stubs that connect to nothing:
+        // Object.515 (stern rope tube), Object.113 (line off the starboard
+        // aft winch — identified by Kord).
+        if (child.name) {
+          const clean = child.name.replace(/[\._]/g, '').toLowerCase();
+          if (clean === 'object515' || clean === 'object113') {
+            child.visible = false;
+          }
         }
       }
     });
