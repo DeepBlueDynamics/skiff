@@ -386,7 +386,8 @@ export function SpinnakerSail() {
       luffNodes,
       tackRope,
       clewRope,
-      clewAnchor: CLEW_ANCHOR,
+      // Mutable — the sheet-side toggle re-points it to the other winch.
+      clewAnchor: CLEW_ANCHOR.clone(),
       geometry,
       material,
       sharedEdgesArray,
@@ -401,7 +402,25 @@ export function SpinnakerSail() {
       rigCapsules,
       capsuleExemptions,
     };
-  }, [jibScene, sheetSide]);
+    // NOTE: sheetSide is intentionally NOT a dependency — a side change must
+    // NOT rebuild (reset) the sail. The effect below gybes the live cloth.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jibScene]);
+
+  // Sheet-side toggle: gybe the LIVE sail instead of resetting it. Mirroring
+  // every particle across the centerline (x → −x in glTF coords) is an
+  // isometry — all spring/bend rest lengths hold exactly — so the solver
+  // accepts the flipped state as-is and the wind takes over on the new side.
+  const lastSheetSide = useRef(sheetSide);
+  useEffect(() => {
+    if (lastSheetSide.current === sheetSide) return;
+    lastSheetSide.current = sheetSide;
+    sim.clewAnchor.copy(sheetSide === 'port' ? SHEET_LEAD_PORT : SHEET_LEAD_STARBOARD);
+    for (const p of sim.parts) {
+      p.pos.x = -p.pos.x;
+      p.prev.x = -p.prev.x;
+    }
+  }, [sheetSide, sim]);
 
   const accumulator = useRef(0);
   const filteredForce = useRef(new THREE.Vector3());

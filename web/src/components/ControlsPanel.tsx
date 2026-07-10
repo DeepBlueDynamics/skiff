@@ -336,12 +336,11 @@ export function ControlsPanel() {
             Luff pin
           </label>
           <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: 'var(--ink)' }}>
-            <input
-              type="checkbox"
-              checked={settings.sheetSide === 'starboard'}
-              onChange={(e) => setSetting('sheetSide', e.target.checked ? 'starboard' : 'port')}
+            <span style={{ marginRight: 'auto' }}>Sheet</span>
+            <SideToggle
+              value={settings.sheetSide}
+              onChange={(side) => setSetting('sheetSide', side)}
             />
-            Sheet stbd
           </label>
           <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: 'var(--ink)' }}>
             <input
@@ -480,6 +479,58 @@ function ControlGroup({ icon, title, children }: { icon: React.ReactNode; title:
       </div>
       {children}
     </div>
+  );
+}
+
+/** Modern pill toggle for the sheet side: knob slides left (PORT, red) or
+ *  right (STBD, green — nautical colors). Flipping it gybes the live sail. */
+function SideToggle({
+  value,
+  onChange,
+}: {
+  value: 'port' | 'starboard';
+  onChange: (side: 'port' | 'starboard') => void;
+}) {
+  const stbd = value === 'starboard';
+  return (
+    <button
+      onClick={() => onChange(stbd ? 'port' : 'starboard')}
+      title="Flip the sheet (gybes the sail) to the other side"
+      style={{
+        position: 'relative',
+        width: '64px',
+        height: '22px',
+        borderRadius: '11px',
+        border: '1px solid rgba(255,255,255,0.15)',
+        background: stbd ? 'rgba(63,185,80,0.22)' : 'rgba(240,102,110,0.22)',
+        cursor: 'pointer',
+        padding: 0,
+        transition: 'background 0.2s',
+        flexShrink: 0,
+      }}
+    >
+      <span
+        style={{
+          position: 'absolute',
+          top: '2px',
+          left: stbd ? '32px' : '2px',
+          width: '28px',
+          height: '16px',
+          borderRadius: '9px',
+          background: stbd ? '#3fb950' : '#f0666e',
+          color: '#0b1016',
+          fontSize: '9px',
+          fontWeight: 700,
+          letterSpacing: '0.04em',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          transition: 'left 0.18s ease, background 0.2s',
+        }}
+      >
+        {stbd ? 'STBD' : 'PORT'}
+      </span>
+    </button>
   );
 }
 
