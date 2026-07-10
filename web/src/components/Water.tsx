@@ -62,10 +62,15 @@ vec2 oceanGrad = vec2(0.0);
 float waveH = uWaveHeight;
 if (waveH > 0.001) {
   float w0 = 6.28318530718 / uWavePeriod;
+  // Deep-water dispersion: k = ω²/g (in lockstep with backend + math.ts).
+  // Render-side λ floor (~8 m): the 3.1 m vertex grid can't draw shorter —
+  // and the backend's hull averaging means the boat ignores them anyway.
+  float k0 = min(w0 * w0 / 9.81, 0.8);
+  float k1 = min((1.7 * w0) * (1.7 * w0) / 9.81, 1.2);
   vec2 d0 = vec2(sin(uWaveDir), cos(uWaveDir));
   // C0/C1 — canonical physics components (vertical part MUST match backend).
-  gerstner(enPos, d0, 0.08, 0.36 * waveH, w0, 0.0, 0.30, oceanDisp, oceanGrad);
-  gerstner(enPos, d0, 0.136, 0.09 * waveH, 1.7 * w0, 0.8, 0.40, oceanDisp, oceanGrad);
+  gerstner(enPos, d0, k0, 0.36 * waveH, w0, 0.0, 0.30, oceanDisp, oceanGrad);
+  gerstner(enPos, d0, k1, 0.09 * waveH, 1.7 * w0, 0.8, 0.40, oceanDisp, oceanGrad);
   // C2+ — visual chop, deep-water dispersion ω = sqrt(g·k), sub-hull λ.
   vec2 d1 = vec2(sin(uWaveDir + 0.55), cos(uWaveDir + 0.55));
   vec2 d2 = vec2(sin(uWaveDir - 0.72), cos(uWaveDir - 0.72));

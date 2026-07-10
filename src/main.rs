@@ -370,15 +370,43 @@ async fn main() -> anyhow::Result<()> {
             let (wave_eta_disp, wave_pose) = if wave_h > 1.0e-3 {
                 let dir = state.env.wave_to_deg.unwrap_or(290.0).to_radians();
                 let period = state.env.wave_period_s.unwrap_or(7.0).max(1.0);
-                let k = 0.08;
                 let omega = std::f64::consts::TAU / period;
+                // Deep-water dispersion: k = ω²/g. Short period ⇒ short AND
+                // steep waves; the period slider now controls steepness the
+                // way the real sea does. (Was a hardcoded k = 0.08 — every
+                // sea state looked like 78 m swell and the boat rode flat.)
+                let k0 = omega * omega / 9.81;
+                let k1 = (1.7 * omega).powi(2) / 9.81;
                 let along = state.local_pos_m.east * dir.sin() + state.local_pos_m.north * dir.cos();
-                let ph = k * along - omega * state.elapsed_s;
-                let eta_disp = wave_h * (0.36 * ph.sin() + 0.09 * (1.7 * ph + 0.8).sin());
-                let dslope = wave_h * k * (0.36 * ph.cos() + 0.153 * (1.7 * ph + 0.8).cos());
-                // Display-frame slope vector and body-axis components.
-                let (s_e, s_n) = (dslope * dir.sin(), dslope * dir.cos());
                 let hdg = state.heading_true_deg.to_radians();
+                // Wave travel relative to the bow — used for hull averaging.
+                let mu = dir - hdg;
+                // Hull-length averaging (Smith-type correction): the pose the
+                // hull can actually follow is the wave field AVERAGED over the
+                // waterplane. sinc(k·L/2 · cos μ)·sinc(k·B/2 · sin μ) per
+                // component — waves shorter than the hull pass underneath
+                // without pitching it. Lagoon 450S: L/2 = 7.0 m, B/2 = 3.9 m.
+                let sinc = |x: f64| if x.abs() < 1.0e-6 { 1.0 } else { x.sin() / x };
+                let hull_avg = |k: f64| {
+                    sinc(k * 7.0 * mu.cos()) * sinc(k * 3.9 * mu.sin())
+                };
+                // Per-component elevation + slope (full field for the slam
+                // check / rendering; averaged field for the pose targets).
+                let comps = [
+                    (0.36 * wave_h, k0, k0 * along - omega * state.elapsed_s),
+                    (0.09 * wave_h, k1, k1 * along - 1.7 * omega * state.elapsed_s + 0.8),
+                ];
+                let mut eta_disp = 0.0;
+                let mut eta_avg = 0.0;
+                let mut dslope_avg = 0.0;
+                for (amp, k, ph) in comps {
+                    let f = hull_avg(k);
+                    eta_disp += amp * ph.sin();
+                    eta_avg += amp * ph.sin() * f;
+                    dslope_avg += amp * k * ph.cos() * f;
+                }
+                // Display-frame slope vector and body-axis components.
+                let (s_e, s_n) = (dslope_avg * dir.sin(), dslope_avg * dir.cos());
                 let slope_bow = s_e * hdg.sin() + s_n * hdg.cos();
                 let slope_stbd = s_e * hdg.cos() - s_n * hdg.sin();
                 // Engine targets: eta2 = −η (bob = −eta2); heel_deg = φ is
@@ -388,7 +416,7 @@ async fn main() -> anyhow::Result<()> {
                 // measured via live wrench probes 2026-07-09.
                 (
                     eta_disp,
-                    Some([-eta_disp, slope_stbd.atan(), slope_bow.atan()]),
+                    Some([-eta_avg, slope_stbd.atan(), slope_bow.atan()]),
                 )
             } else {
                 (0.0, None)

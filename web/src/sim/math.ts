@@ -87,8 +87,15 @@ export function waveElevation(
   if (waveHeightM <= 0.001) return 0;
   const dir = degToRad(waveToDeg);
   const along = east * Math.sin(dir) + north * Math.cos(dir);
-  const ph = 0.08 * along - (t / Math.max(1, wavePeriodS)) * Math.PI * 2;
-  return waveHeightM * (0.36 * Math.sin(ph) + 0.09 * Math.sin(1.7 * ph + 0.8));
+  const omega = (Math.PI * 2) / Math.max(1, wavePeriodS);
+  // Deep-water dispersion: k = ω²/g — short period means short, steep waves.
+  const k0 = (omega * omega) / 9.81;
+  const k1 = (1.7 * omega) ** 2 / 9.81;
+  return (
+    waveHeightM *
+    (0.36 * Math.sin(k0 * along - omega * t) +
+      0.09 * Math.sin(k1 * along - 1.7 * omega * t + 0.8))
+  );
 }
 
 /** Scene-coordinate wrapper (scene x = east, scene z = −north). */
