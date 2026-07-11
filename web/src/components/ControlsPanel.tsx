@@ -457,20 +457,50 @@ export function ControlsPanel() {
 
       <Section title="Boat" icon={<Gauge size={15} />} storageKey="skiff.section.boat2">
       <ControlGroup icon={<Compass size={16} />} title="Steering">
-        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', marginBottom: '8px', color: 'var(--ink)' }}>
-          <input
-            type="checkbox"
-            checked={settings.autopilotEnabled}
-            onChange={(e) => {
-              const enabled = e.target.checked;
-              setSetting('autopilotEnabled', enabled);
-              if (enabled) {
-                setSetting('targetHeading', Math.round(boat.headingDeg));
-              }
-            }}
-          />
-          Enable Autopilot
-        </label>
+        {(() => {
+          const agentDriving =
+            boat.apHeadingDeg != null ||
+            boat.apThrustN != null ||
+            !!(boat.routeGuidance && boat.routeGuidance.ageS < 15);
+          return (
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', marginBottom: '8px', color: 'var(--ink)' }}>
+              <input
+                type="checkbox"
+                checked={settings.autopilotEnabled || agentDriving}
+                onChange={async (e) => {
+                  const enabled = e.target.checked;
+                  setSetting('autopilotEnabled', enabled);
+                  if (enabled) {
+                    setSetting('targetHeading', Math.round(boat.headingDeg));
+                  } else if (agentDriving) {
+                    // Unchecking while an agent is driving = TAKE BACK CONTROL:
+                    // release the backend rudder + engine overrides.
+                    try {
+                      await fetch('/v1/sim/course', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({}),
+                      });
+                    } catch {}
+                  }
+                }}
+              />
+              {/* Live blinker: pulses purple while an agent holds the boat. */}
+              <span
+                style={{
+                  width: '9px',
+                  height: '9px',
+                  borderRadius: '50%',
+                  background: agentDriving ? '#a855f7' : 'rgba(255,255,255,0.18)',
+                  boxShadow: agentDriving ? '0 0 8px #a855f7' : 'none',
+                  animation: agentDriving ? 'pulse 0.7s infinite alternate' : 'none',
+                  flexShrink: 0,
+                }}
+              />
+              {agentDriving ? 'Agent controlling' : 'Enable Autopilot'}
+            </label>
+          );
+        })()}
         {boat.routeGuidance && boat.routeGuidance.ageS < 15 && (
           <div style={{
             background: 'rgba(14, 165, 233, 0.12)',
@@ -514,9 +544,25 @@ export function ControlsPanel() {
         )}
       </ControlGroup>
       <ControlGroup icon={<Gauge size={16} />} title="Twin Engines">
+        {boat.apThrustN != null && (
+          <div style={{
+            background: 'rgba(168, 85, 247, 0.14)',
+            border: '1px solid rgba(168, 85, 247, 0.4)',
+            borderRadius: '4px',
+            padding: '5px 8px',
+            fontSize: '11px',
+            color: '#e9d5ff',
+            marginBottom: '8px',
+            fontFamily: 'monospace',
+          }}>
+            ⚙ Agent running engines · {(boat.apThrustN / 1000).toFixed(1)} kN both
+          </div>
+        )}
+        {/* Sliders show the AGENT's commanded thrust while it holds the
+            engines, so the readout always matches reality. */}
         <Slider
           label="Starboard"
-          value={input.thrustPort}
+          value={boat.apThrustN != null ? boat.apThrustN : input.thrustPort}
           min={-3000}
           max={3000}
           step={100}
@@ -525,7 +571,7 @@ export function ControlsPanel() {
         />
         <Slider
           label="Port"
-          value={input.thrustStbd}
+          value={boat.apThrustN != null ? boat.apThrustN : input.thrustStbd}
           min={-3000}
           max={3000}
           step={100}
