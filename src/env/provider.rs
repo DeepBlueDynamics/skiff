@@ -348,6 +348,19 @@ impl EnvironmentProvider for HttpEnvironmentProvider {
 
         let (wind_res, current_res, waves_res) = tokio::join!(wind_fut, current_fut, waves_fut);
 
+        // Surface per-field failures instead of silently zeroing them — a failed
+        // wind fetch (401/404/parse) is exactly why "live" reads 0 wind, and the
+        // old code swallowed it via `.ok()` while the caller logged "success".
+        if let Err(e) = &wind_res {
+            tracing::warn!("Meridian wind fetch failed (wind will read 0): {e}");
+        }
+        if let Err(e) = &current_res {
+            tracing::warn!("Meridian current fetch failed: {e}");
+        }
+        if let Err(e) = &waves_res {
+            tracing::warn!("Meridian wave fetch failed: {e}");
+        }
+
         let wind_field: Option<Field> = wind_res.ok();
         let current_field: Option<Field> = current_res.ok();
         let wave_field: Option<Field> = waves_res.ok();
@@ -356,7 +369,17 @@ impl EnvironmentProvider for HttpEnvironmentProvider {
         for p in req.points {
             // Interpolate wind
             let wind_ground_mps = match &wind_field {
-                Some(field) => field.interpolate_wind(p.pos, p.at).unwrap_or(Vec2Mps::ZERO),
+                Some(field) => match field.interpolate_wind(p.pos, p.at) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!(
+                            "Meridian wind field has no value at {:.4},{:.4} ({e}) — reading 0",
+                            p.pos.lat_deg,
+                            p.pos.lon_deg
+                        );
+                        Vec2Mps::ZERO
+                    }
+                },
                 None => Vec2Mps::ZERO,
             };
 

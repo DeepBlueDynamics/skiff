@@ -553,7 +553,12 @@ async fn main() -> anyhow::Result<()> {
             match env_provider_for_weather.sample_many(req).await {
                 Ok(mut samples) => {
                     if let Some(sample) = samples.pop() {
-                        tracing::info!("Successfully fetched environment updates. Wind: {} m/s, Current: {} m/s", sample.wind_ground_mps.magnitude(), sample.current_ground_mps.magnitude());
+                        let wind_mag = sample.wind_ground_mps.magnitude();
+                        if wind_mag <= 0.01 {
+                            tracing::warn!("Meridian returned 0 wind for {:.4},{:.4} — live stays on default (check token scope / data coverage)", current_pos.lat_deg, current_pos.lon_deg);
+                        } else {
+                            tracing::info!("Meridian live: wind {:.1} m/s, current {:.1} m/s", wind_mag, sample.current_ground_mps.magnitude());
+                        }
                         // MERGE, don't clobber: meridian serves /weather/wind
                         // today; /ocean/current and /weather/wave are planned.
                         // A field that came back absent/zero must not zero out
