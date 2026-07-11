@@ -536,15 +536,56 @@ export function ControlsPanel() {
             background: 'rgba(14, 165, 233, 0.12)',
             border: '1px solid rgba(14, 165, 233, 0.35)',
             borderRadius: '4px',
-            padding: '6px 8px',
+            padding: '8px 10px',
             fontSize: '11px',
             color: '#7dd3fc',
             marginBottom: '8px',
-            fontFamily: 'monospace',
+            // Fixed width + tabular figures so changing values never resize or
+            // reflow the card (was a single ' · ' line that jumped every tick).
+            width: '100%',
+            boxSizing: 'border-box',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '5px',
+            fontVariantNumeric: 'tabular-nums',
           }}>
-            ⛵ OpenCPN route: brg {boat.routeGuidance.bearingTrueDeg?.toFixed(0) ?? '—'}°
-            {boat.routeGuidance.xteM != null ? ` · XTE ${boat.routeGuidance.xteM.toFixed(0)} m` : ''}
-            {settings.autopilotEnabled ? ' · following' : ' · enable AP to follow'}
+            <div style={{
+              fontWeight: 'bold',
+              color: '#bae6fd',
+              borderBottom: '1px solid rgba(14,165,233,0.3)',
+              paddingBottom: '4px',
+            }}>
+              ⛵ OpenCPN route — autopilot conning the boat
+            </div>
+            <RouteRow
+              label="Bearing to next waypoint"
+              hint="the heading the autopilot is steering to"
+              value={`${
+                boat.routeGuidance.bearingTrueDeg != null
+                  ? String(Math.round(boat.routeGuidance.bearingTrueDeg)).padStart(3, '0')
+                  : '—'
+              }°`}
+            />
+            <RouteRow
+              label="Cross-track error (XTE)"
+              hint="how far off the planned line, and to which side"
+              value={
+                boat.routeGuidance.xteM != null
+                  ? `${boat.routeGuidance.xteM >= 0 ? 'stbd' : 'port'} ${Math.abs(
+                      boat.routeGuidance.xteM,
+                    ).toFixed(0)} m`
+                  : '—'
+              }
+            />
+            <RouteRow
+              label="Following"
+              hint={
+                boat.apTrackHold
+                  ? 'track-hold: carrying rudder to hold the ground track through the current'
+                  : 'heading-hold: steering the compass bearing (boat crabs with the current)'
+              }
+              value={boat.apTrackHold ? 'track-hold' : 'heading-hold'}
+            />
           </div>
         )}
         <Slider
@@ -725,6 +766,23 @@ export function ControlsPanel() {
         <span>R reset</span>
       </div>
     </aside>
+  );
+}
+
+/** One labelled row of the OpenCPN route badge: a description on the left
+ *  (with a smaller hint line) and a right-aligned, nowrap value. Fixed layout
+ *  so changing values never resize or reflow the badge. */
+function RouteRow({ label, hint, value }: { label: string; hint: string; value: string }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '10px' }}>
+      <span style={{ color: 'rgba(125,211,252,0.85)', lineHeight: 1.25 }}>
+        {label}
+        <span style={{ display: 'block', fontSize: '9px', fontWeight: 'normal', color: 'rgba(125,211,252,0.5)' }}>
+          {hint}
+        </span>
+      </span>
+      <span style={{ fontWeight: 'bold', color: '#e0f2fe', whiteSpace: 'nowrap' }}>{value}</span>
+    </div>
   );
 }
 

@@ -27,6 +27,15 @@ pub struct RouteGuidance {
     /// Next waypoint, if the source publishes it.
     pub next_lat_deg: Option<f64>,
     pub next_lon_deg: Option<f64>,
+    /// Route sequencing (SignalK v2 `activeRoute.pointIndex`/`pointTotal`).
+    /// Present ONLY while a multi-leg route is being sequenced by OpenCPN /
+    /// the bridge; a single-target "navigate to here" destination carries
+    /// neither. Skiff uses their absence to decide it may self-clear on
+    /// arrival (see the arrival check in the physics loop): SignalK's
+    /// course-provider recomputes calcValues forever, so an orphaned
+    /// single-target destination never goes stale on its own.
+    pub point_index: Option<i64>,
+    pub point_total: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -213,6 +222,16 @@ fn parse_guidance(text: &str) -> Option<RouteGuidance> {
                     g.bearing_true_deg = Some(rad.to_degrees().rem_euclid(360.0));
                     any = true;
                 }
+            } else if path.ends_with("pointIndex") {
+                if let Some(i) = value.and_then(|x| x.as_i64()) {
+                    g.point_index = Some(i);
+                    any = true;
+                }
+            } else if path.ends_with("pointTotal") {
+                if let Some(i) = value.and_then(|x| x.as_i64()) {
+                    g.point_total = Some(i);
+                    any = true;
+                }
             } else if path.ends_with("nextPoint.position") {
                 if let Some(pos) = value {
                     let lat = pos.get("latitude").and_then(|x| x.as_f64());
@@ -227,4 +246,42 @@ fn parse_guidance(text: &str) -> Option<RouteGuidance> {
         }
     }
     if any { Some(g) } else { None }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn single_target_destination_has_no_sequencing() {
+        // OpenCPN "navigate to here": server computes a bearing to nextPoint,
+        // but there is no activeRoute → no pointIndex/pointTotal. Skiff relies
+        // on that absence to self-clear on arrival.
+        let delta = r#"{"context":"vessels.self","updates":[{"values":[
+            {"path":"navigation.course.calcValues.bearingTrue","value":1.396},
+            {"path":"navigation.course.nextPoint.position","value":{"latitude":11.986,"longitude":-61.789}}
+        ]}]}"#;
+        let g = parse_guidance(delta).expect("should parse guidance");
+        assert!(g.bearing_true_deg.is_some());
+        assert_eq!(g.next_lat_deg, Some(11.986));
+        assert!(
+            g.point_index.is_none() && g.point_total.is_none(),
+            "single-target nav must NOT carry route sequencing"
+        );
+    }
+
+    #[test]
+    fn activated_route_carries_sequencing() {
+        // An activated multi-leg route DOES publish pointIndex/pointTotal;
+        // their presence tells skiff NOT to self-clear (OpenCPN/the bridge
+        // sequences the legs).
+        let delta = r#"{"context":"vessels.self","updates":[{"values":[
+            {"path":"navigation.course.activeRoute.pointIndex","value":1},
+            {"path":"navigation.course.activeRoute.pointTotal","value":3},
+            {"path":"navigation.course.calcValues.bearingTrue","value":1.396}
+        ]}]}"#;
+        let g = parse_guidance(delta).expect("should parse guidance");
+        assert_eq!(g.point_index, Some(1));
+        assert_eq!(g.point_total, Some(3));
+    }
 }

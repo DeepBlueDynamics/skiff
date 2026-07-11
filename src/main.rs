@@ -14,7 +14,7 @@ use tower_http::services::ServeDir;
 use tracing_subscriber::EnvFilter;
 
 use skiff::boat::classify_course;
-use skiff::core::{LatLon, Vec2Mps, move_latlon, true_wind_angle_deg};
+use skiff::core::{LatLon, Vec2Mps, distance_m, move_latlon, true_wind_angle_deg};
 use skiff::env::{
     EnvBatchRequest, EnvQueryPoint, EnvironmentProvider, HttpEnvironmentProvider,
     MetOcean, test_env, wind_over_water,
@@ -195,6 +195,32 @@ pub const DRAFT_M: f64 = 1.3;
 
 /// Lagoon 450 tank capacity per side (liters).
 pub const TANK_CAPACITY_L: f64 = 275.0;
+
+// --- Track-hold cascade tuning ---------------------------------------------
+// Track-hold steers the ground track (COG) onto the target by adding a slow
+// STANDING CRAB on top of a fast heading loop. COG lags heading and is noisy
+// at low speed, so the crab loop is deliberately gentle; the values below are
+// what keep it from limit-cycling the rudder rail-to-rail.
+//
+/// Engagement hysteresis (m/s): engage above ON (~2.5 kt), drop to heading-
+/// hold below OFF (~1.9 kt) where COG is too noisy to steer on.
+const TH_SOG_ON: f64 = 1.3;
+const TH_SOG_OFF: f64 = 1.0;
+/// COG low-pass time constant (s) — smooths the ground-track jitter the crab
+/// loop would otherwise chase.
+const TH_COG_TAU_S: f64 = 3.0;
+/// Track-error deadband (deg): no crab correction for small/noisy offsets.
+const TH_DEADBAND_DEG: f64 = 3.0;
+/// Standing-crab integrator gain (per s) and slew cap (deg/s). Slow on
+/// purpose: the crab loop must not outrun the heading→COG lag (old code slewed
+/// up to 10 deg/s and oscillated).
+const TH_CRAB_KI: f64 = 0.10;
+const TH_CRAB_SLEW_DPS: f64 = 1.0;
+/// Max standing crab (deg) the trim will build.
+const TH_CRAB_MAX_DEG: f64 = 45.0;
+/// Inner heading-loop gain (helm per deg of heading error); shared by track-
+/// hold and plain heading-hold — proven stable, so both use it identically.
+const HEADING_KP: f64 = 0.06;
 
 fn default_tank() -> f64 {
     TANK_CAPACITY_L
@@ -418,6 +444,44 @@ async fn main() -> anyhow::Result<()> {
     let env_provider: Arc<dyn EnvironmentProvider> =
         Arc::new(HttpEnvironmentProvider::new(meridian_url, user_token.clone()));
 
+    // Self-clearing arrival: when the boat reaches a single-target
+    // destination, the physics loop signals this channel and the task below
+    // issues `DELETE /navigation/course` to SignalK. This must live off the
+    // physics thread (no blocking HTTP under the state lock). Without it, an
+    // OpenCPN "navigate to here" that silently deactivates on arrival leaves
+    // an orphaned destination whose calcValues SignalK recomputes forever —
+    // the boat would keep steering to an already-passed waypoint.
+    let (course_clear_tx, mut course_clear_rx) =
+        tokio::sync::mpsc::unbounded_channel::<()>();
+    if let Some(host) = sk_host.clone() {
+        let bare = host
+            .trim_end_matches('/')
+            .trim_start_matches("http://")
+            .trim_start_matches("https://")
+            .trim_start_matches("ws://")
+            .trim_start_matches("wss://")
+            .to_string();
+        let url =
+            format!("http://{bare}/signalk/v2/api/vessels/self/navigation/course");
+        let token = sk_token.clone();
+        tokio::spawn(async move {
+            let client = reqwest::Client::new();
+            while course_clear_rx.recv().await.is_some() {
+                let mut req = client.delete(&url);
+                if let Some(t) = token.as_ref().filter(|t| !t.is_empty()) {
+                    req = req.bearer_auth(t);
+                }
+                match req.send().await {
+                    Ok(r) => tracing::info!(
+                        status = %r.status(),
+                        "self-clearing arrival: DELETE course"
+                    ),
+                    Err(e) => tracing::warn!("self-clearing arrival DELETE failed: {e}"),
+                }
+            }
+        });
+    }
+
     // Instantiate Signal K Client
     // Route guidance flows back FROM SignalK (OpenCPN activated routes):
     // the client subscribes and pushes parsed guidance into this channel;
@@ -437,6 +501,8 @@ async fn main() -> anyhow::Result<()> {
                         if g.xte_m.is_some() { cur.xte_m = g.xte_m; }
                         if g.next_lat_deg.is_some() { cur.next_lat_deg = g.next_lat_deg; }
                         if g.next_lon_deg.is_some() { cur.next_lon_deg = g.next_lon_deg; }
+                        if g.point_index.is_some() { cur.point_index = g.point_index; }
+                        if g.point_total.is_some() { cur.point_total = g.point_total; }
                         cur
                     }
                     None => {
@@ -533,8 +599,15 @@ async fn main() -> anyhow::Result<()> {
     let bathy_physics = bathy.clone();
     tokio::spawn(async move {
         let mut last_tick = tokio::time::Instant::now();
-        // Track-hold outer-loop state: the slowly-crabbed commanded heading.
-        let mut track_cmd_heading: Option<f64> = None;
+        // Track-hold cascade state: the slow STANDING-CRAB offset added on top
+        // of the target heading, a low-passed COG, and engagement hysteresis
+        // (so it doesn't chatter on/off around the speed threshold).
+        let mut track_crab: Option<f64> = None;
+        let mut cog_filt: Option<f64> = None;
+        let mut track_engaged = false;
+        // Self-clearing arrival rate limiter: elapsed_s of the last course-clear
+        // signal, so a slow/failing DELETE doesn't spam once per tick.
+        let mut last_arrival_clear_s: Option<f64> = None;
         loop {
             tokio::time::sleep(Duration::from_millis(50)).await;
             let now = tokio::time::Instant::now();
@@ -686,34 +759,96 @@ async fn main() -> anyhow::Result<()> {
                 state.route_guidance = None;
                 state.route_guidance_at_s = None;
             }
+            // Self-clearing arrival. SignalK's course-provider recomputes
+            // calcValues to an orphaned destination FOREVER, so the staleness
+            // check above never trips when OpenCPN silently deactivates on
+            // arrival — the boat would keep steering to the passed waypoint and
+            // sail herself to a stop. When we reach a SINGLE-TARGET destination
+            // (no route sequencing behind it — a multi-leg route carries
+            // pointIndex/pointTotal and is advanced by OpenCPN/the bridge), we
+            // clear the course ourselves. Rate-limited so a slow DELETE doesn't
+            // re-fire every tick; re-arms once guidance ends.
+            const ARRIVAL_CLEAR_RADIUS_M: f64 = 60.0; // just past SK's 50 m circle
+            if let Some(g) = state.route_guidance.as_ref() {
+                let single_target = g.point_index.is_none() && g.point_total.is_none();
+                if let (true, Some(wlat), Some(wlon)) =
+                    (single_target, g.next_lat_deg, g.next_lon_deg)
+                {
+                    let dist = distance_m(
+                        state.pos,
+                        LatLon { lat_deg: wlat, lon_deg: wlon },
+                    );
+                    let cooled = last_arrival_clear_s
+                        .map(|t| state.elapsed_s - t >= 3.0)
+                        .unwrap_or(true);
+                    if dist <= ARRIVAL_CLEAR_RADIUS_M && cooled {
+                        last_arrival_clear_s = Some(state.elapsed_s);
+                        let _ = course_clear_tx.send(());
+                        state.route_guidance = None;
+                        state.route_guidance_at_s = None;
+                        tracing::info!(
+                            dist_m = dist,
+                            "self-clearing arrival: reached single-target waypoint"
+                        );
+                    }
+                }
+            } else {
+                last_arrival_clear_s = None; // re-arm for the next destination
+            }
             let route_target = state
                 .route_guidance
                 .as_ref()
                 .and_then(|g| g.bearing_true_deg);
             let norm180 = |a: f64| ((a + 180.0).rem_euclid(360.0)) - 180.0;
             let effective_helm = if let Some(target) = route_target.or(state.ap_heading_deg) {
-                if state.ap_track_hold && state.sog_mps > 0.75 {
-                    // TRACK hold — cascade: a SLOW outer loop crabs a commanded
-                    // heading to null the course-over-ground error; the fast,
-                    // stable inner heading loop steers to it. (A plain
-                    // P-controller straight on COG oscillates because COG lags
-                    // heading.) The commanded crab is clamped to ±60°.
-                    let cmd = track_cmd_heading.get_or_insert(state.heading_true_deg);
-                    let cog_err = norm180(target - state.cog_true_deg);
-                    *cmd += (cog_err * 0.15 * dt).clamp(-0.5, 0.5);
-                    let crab = norm180(*cmd - target).clamp(-60.0, 60.0);
-                    *cmd = target + crab;
-                    let err = norm180(*cmd - state.heading_true_deg);
-                    (-err * 0.06).clamp(-1.0, 1.0)
+                // Track-hold engagement with hysteresis: COG is only trustworthy
+                // above a few knots, so engage at ON and don't drop back to
+                // heading-hold until OFF (prevents on/off chatter at the edge).
+                if state.ap_track_hold {
+                    if track_engaged {
+                        if state.sog_mps < TH_SOG_OFF {
+                            track_engaged = false;
+                        }
+                    } else if state.sog_mps > TH_SOG_ON {
+                        track_engaged = true;
+                    }
                 } else {
-                    // HEADING hold — steer the compass heading (boat crabs
-                    // with set/drift). Reset the track integrator.
-                    track_cmd_heading = None;
+                    track_engaged = false;
+                }
+
+                if track_engaged {
+                    // TRACK hold — a fast, stable heading loop steers to
+                    // (target + standing crab); a SLOW outer loop builds that
+                    // crab to walk the ground track (COG) onto the target. The
+                    // crab loop is low-passed, deadbanded, gain- AND slew-limited
+                    // so it can't outrun the heading→COG lag and limit-cycle.
+                    let cf = cog_filt.get_or_insert(state.cog_true_deg);
+                    let cog_alpha = 1.0 - (-dt / TH_COG_TAU_S).exp();
+                    *cf = (*cf + cog_alpha * norm180(state.cog_true_deg - *cf))
+                        .rem_euclid(360.0);
+                    let cog_err = norm180(target - *cf);
+                    // Soft deadband: no crab for small/noisy track errors.
+                    let cog_err_db =
+                        cog_err.signum() * (cog_err.abs() - TH_DEADBAND_DEG).max(0.0);
+                    let crab = track_crab.get_or_insert(0.0);
+                    let crab_rate =
+                        (TH_CRAB_KI * cog_err_db).clamp(-TH_CRAB_SLEW_DPS, TH_CRAB_SLEW_DPS);
+                    // Clamp is the anti-windup: the crab state can't exceed ±MAX.
+                    *crab = (*crab + crab_rate * dt).clamp(-TH_CRAB_MAX_DEG, TH_CRAB_MAX_DEG);
+                    let err = norm180(target + *crab - state.heading_true_deg);
+                    (-err * HEADING_KP).clamp(-1.0, 1.0)
+                } else {
+                    // HEADING hold — steer the compass heading directly (boat
+                    // crabs with set/drift). Reset the track-hold state.
+                    track_crab = None;
+                    cog_filt = None;
                     let err = norm180(target - state.heading_true_deg);
-                    (-err * 0.06).clamp(-1.0, 1.0)
+                    (-err * HEADING_KP).clamp(-1.0, 1.0)
                 }
             } else {
-                track_cmd_heading = None;
+                track_crab = None;
+                cog_filt = None;
+                track_engaged = false;
                 state.control.helm
             };
             // Engine override wins over the browser tab's thrust posts (same
@@ -966,6 +1101,71 @@ async fn main() -> anyhow::Result<()> {
                     delta.updates[0].values.push(SignalKPathValue {
                         path: "environment.depth.belowKeel".to_string(),
                         value: serde_json::json!(dok),
+                    });
+                }
+
+                // Attitude (SI radians): roll = heel, pitch, yaw = heading.
+                delta.updates[0].values.push(SignalKPathValue {
+                    path: "navigation.attitude".to_string(),
+                    value: serde_json::json!({
+                        "roll": data.heel_deg.to_radians(),
+                        "pitch": data.pitch_deg.to_radians(),
+                        "yaw": data.heading_true_deg.to_radians(),
+                    }),
+                });
+                // Steering + hydrodynamic angles (radians).
+                delta.updates[0].values.push(SignalKPathValue {
+                    path: "steering.rudderAngle".to_string(),
+                    value: serde_json::json!(data.rudder_deg.to_radians()),
+                });
+                delta.updates[0].values.push(SignalKPathValue {
+                    path: "navigation.leewayAngle".to_string(),
+                    value: serde_json::json!(data.leeway_deg.to_radians()),
+                });
+                // True wind angle over water (boat-relative radians).
+                delta.updates[0].values.push(SignalKPathValue {
+                    path: "environment.wind.angleTrueWater".to_string(),
+                    value: serde_json::json!(data.twa_deg.to_radians()),
+                });
+
+                // Fuel tanks (Lagoon 450: 2 × 275 L). SignalK volumes are m³,
+                // level is a 0..1 ratio. Port = instance 0, starboard = 1.
+                let cap_m3 = TANK_CAPACITY_L / 1000.0;
+                for (id, name, liters) in [
+                    ("0", "Port", data.fuel_port_l),
+                    ("1", "Starboard", data.fuel_stbd_l),
+                ] {
+                    delta.updates[0].values.push(SignalKPathValue {
+                        path: format!("tanks.fuel.{id}.currentLevel"),
+                        value: serde_json::json!((liters / TANK_CAPACITY_L).clamp(0.0, 1.0)),
+                    });
+                    delta.updates[0].values.push(SignalKPathValue {
+                        path: format!("tanks.fuel.{id}.currentVolume"),
+                        value: serde_json::json!(liters / 1000.0),
+                    });
+                    delta.updates[0].values.push(SignalKPathValue {
+                        path: format!("tanks.fuel.{id}.capacity"),
+                        value: serde_json::json!(cap_m3),
+                    });
+                    delta.updates[0].values.push(SignalKPathValue {
+                        path: format!("tanks.fuel.{id}.name"),
+                        value: serde_json::json!(name),
+                    });
+                }
+
+                // Engine state per side. Effective thrust includes the agent
+                // engine override (ap_thrust_n) so the state matches what the
+                // physics loop is actually commanding, not just the tab slider.
+                let (eff_port, eff_stbd) = match data.ap_thrust_n {
+                    Some(t) => (t, t),
+                    None => (data.control.thrust_port, data.control.thrust_stbd),
+                };
+                for (id, thrust) in [("port", eff_port), ("starboard", eff_stbd)] {
+                    delta.updates[0].values.push(SignalKPathValue {
+                        path: format!("propulsion.{id}.state"),
+                        value: serde_json::json!(
+                            if thrust.abs() > 1.0 { "started" } else { "stopped" }
+                        ),
                     });
                 }
 
