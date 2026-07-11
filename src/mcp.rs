@@ -186,6 +186,12 @@ async fn call_tool(state: &AppState, name: &str, args: &Value) -> anyhow::Result
                 }
             }
         }
+        "set_sail" => {
+            let mut sim = state.sim_state.write().unwrap();
+            let furled = args.get("furled").and_then(|v| v.as_bool()).unwrap_or(false);
+            sim.ap_sail_furled = if furled { Some(true) } else { None };
+            Ok(json!({ "furled": furled, "note": if furled { "sail furled — motoring, no sail force" } else { "sail set — flying" } }).to_string())
+        }
         "set_engines" => {
             let mut sim = state.sim_state.write().unwrap();
             match num(args, "thrust_n") {
@@ -285,6 +291,16 @@ fn tool_definitions() -> Value {
                 "type": "object",
                 "properties": {
                     "heading_true_deg": { "type": "number", "description": "True heading to hold (0-360). Omit to disengage." }
+                }
+            }
+        },
+        {
+            "name": "set_sail",
+            "description": "Furl or set the headsail. furled=true zeroes all sail force (motor clean — the code-zero overpowers the rudder at low speed, so furl it to con out of tight water). furled=false lets it fly.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "furled": { "type": "boolean", "description": "true = furl (depower), false = set flying" }
                 }
             }
         },

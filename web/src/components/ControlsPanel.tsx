@@ -390,7 +390,17 @@ export function ControlsPanel() {
           <span style={{ marginRight: 'auto' }}>Type</span>
           <select
             value={settings.headsailType}
-            onChange={(e) => setSetting('headsailType', e.target.value as any)}
+            onChange={(e) => {
+              const t = e.target.value as any;
+              setSetting('headsailType', t);
+              // 'None' furls it: hide the cloth AND tell the backend to zero
+              // the sail force (so it's depowered headless too).
+              fetch('/v1/sim/sail', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ furled: t === 'none' }),
+              }).catch(() => {});
+            }}
             style={{
               background: 'rgba(0,0,0,0.35)',
               color: 'var(--ink)',
@@ -402,6 +412,7 @@ export function ControlsPanel() {
             }}
           >
             <option value="codezero">Code Zero</option>
+            <option value="none">None (furled)</option>
           </select>
         </label>
         <Slider

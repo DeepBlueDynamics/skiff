@@ -481,6 +481,12 @@ export function SpinnakerSail() {
   // Update physics at 60fps
   useFrame((state, delta) => {
     if (!alignedReady.current) return;
+    // Furled headsail: run no cloth physics and post no wrench (the backend
+    // furl override zeroes sail force regardless, but this saves the compute).
+    if (useSimulator.getState().settings.headsailType === 'none') {
+      forceArrow.visible = false;
+      return;
+    }
     const { parts, springs, clothSpringCount, triangles, clothCount, weldMap, MASS, headI, tackI, clewI, luffNodes, tackRope, clewRope, geometry, sharedEdgesArray, sharedEdgeVerticesArray, sharedEdgeOppositesArray, sharedEdgeCount, collisionHead, collisionNext, neighborMatrix, triNormals, rigCapsules, capsuleExemptions } = sim;
 
     const currentSimState = useSimulator.getState();
@@ -1253,6 +1259,10 @@ export function SpinnakerSail() {
       }
     }
   });
+
+  // Headsail 'None' = furled: hide the whole sail rig. (The useFrame also
+  // stops posting the wrench so the backend sees zero sail force.)
+  if (settings.headsailType === 'none') return null;
 
   return (
     <group>

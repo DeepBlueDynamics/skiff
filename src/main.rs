@@ -176,6 +176,12 @@ pub struct FullSimState {
     /// Same tab-proof rationale as ap_heading_deg.
     #[serde(default)]
     pub ap_thrust_n: Option<f64>,
+    /// Backend sail override (MCP `set_sail`): Some(true) = FURLED (zero sail
+    /// force, motor clean); Some(false) = force full drive; None = manual.
+    /// The powered code-zero overpowers the rudder at low speed, so an agent
+    /// conning out of a tight anchorage must be able to depower it.
+    #[serde(default)]
+    pub ap_sail_furled: Option<bool>,
 }
 
 /// Lagoon 450S draft (m).
@@ -317,6 +323,7 @@ fn create_initial_state() -> FullSimState {
         route_guidance_at_s: None,
         ap_heading_deg: None,
         ap_thrust_n: None,
+        ap_sail_furled: None,
     }
 }
 
@@ -472,12 +479,23 @@ async fn main() -> anyhow::Result<()> {
             let dt = (now - last_tick).as_secs_f64();
             last_tick = now;
 
-            let sail_override = {
+            let mut sail_override = {
                 let stored = wrench_for_physics.read().unwrap();
                 sail_override_from_store(&stored, Instant::now())
             };
 
             let mut state = state_for_physics.write().unwrap();
+
+            // Sail furl override: Some(true) replaces the sail with a ZERO
+            // wrench (blend=1) so the boat motors with no sail force — this is
+            // how an agent depowers the code-zero to con out of a tight spot.
+            if state.ap_sail_furled == Some(true) {
+                sail_override = Some(cat_physics::SailWrenchOverride {
+                    f_body: [0.0; 3],
+                    tau_body: [0.0; 3],
+                    blend: 1.0,
+                });
+            }
             state.elapsed_s += dt;
             state.at = Utc::now();
 
@@ -909,6 +927,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/auth/logout", post(post_auth_logout))
         .route("/v1/sim/refuel", post(post_refuel))
         .route("/v1/sim/course", post(post_course))
+        .route("/v1/sim/sail", post(post_sail))
         // Native MCP server (streamable-HTTP, stateless):
         //   claude mcp add skiff --transport http http://<host>:<port>/mcp
         .route("/mcp", post(mcp::handle_post).get(mcp::handle_get).delete(mcp::handle_delete))
@@ -989,6 +1008,26 @@ async fn post_course(
             current.ap_thrust_n = None;
         }
     }
+    Json(current.clone())
+}
+
+#[derive(Debug, Deserialize)]
+struct SailInput {
+    /// true = furl (no sail force), false/null = set the sail flying again.
+    furled: Option<bool>,
+}
+
+/// Furl or set the sail from the UI (the headsail 'None' option / a furl
+/// toggle) or an agent. `furled:true` depowers the boat for motoring.
+async fn post_sail(
+    State(state): State<AppState>,
+    Json(req): Json<SailInput>,
+) -> Json<FullSimState> {
+    let mut current = state.sim_state.write().unwrap();
+    current.ap_sail_furled = match req.furled {
+        Some(true) => Some(true),
+        _ => None,
+    };
     Json(current.clone())
 }
 
