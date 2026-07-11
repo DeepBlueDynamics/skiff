@@ -358,6 +358,7 @@ function SimulationLoop({ controlsRef }: { controlsRef: React.RefObject<any> }) 
                   ageS: Math.max(0, data.elapsed_s - data.route_guidance_at_s),
                 }
               : null,
+          apHeadingDeg: data.ap_heading_deg ?? null,
         });
       }
     } catch (e) {

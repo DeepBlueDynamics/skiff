@@ -577,10 +577,21 @@ async fn main() -> anyhow::Result<()> {
                 state.fuel_stbd_l =
                     (state.fuel_stbd_l - lps * frac(state.control.thrust_stbd) * dt).max(0.0);
             }
-            // Backend course-hold: same P-gain as the browser autopilot.
-            // Overrides manual helm while engaged (browser AP's helm posts
-            // are simply ignored — one course-holder at a time, backend wins).
-            let effective_helm = if let Some(target) = state.ap_heading_deg {
+            // Steering priority (backend, tab-proof):
+            //   1. FRESH route guidance from SignalK/OpenCPN (< 15 s old) —
+            //      steer to its bearing-to-next-waypoint. An activated route
+            //      in OpenCPN drives the boat directly, headless.
+            //   2. Manual course-hold (`set_course` / ap_heading_deg).
+            //   3. Manual helm.
+            // Browser AP helm posts are ignored while 1 or 2 hold.
+            let route_target = state.route_guidance.as_ref().and_then(|g| {
+                let fresh = state
+                    .route_guidance_at_s
+                    .map(|t| state.elapsed_s - t < 15.0)
+                    .unwrap_or(false);
+                if fresh { g.bearing_true_deg } else { None }
+            });
+            let effective_helm = if let Some(target) = route_target.or(state.ap_heading_deg) {
                 let mut err = target - state.heading_true_deg;
                 err = ((err + 180.0).rem_euclid(360.0)) - 180.0;
                 (-err * 0.06).clamp(-1.0, 1.0)
@@ -872,6 +883,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/auth/token", post(post_auth_token))
         .route("/v1/auth/logout", post(post_auth_logout))
         .route("/v1/sim/refuel", post(post_refuel))
+        .route("/v1/sim/course", post(post_course))
         // Native MCP server (streamable-HTTP, stateless):
         //   claude mcp add skiff --transport http http://<host>:<port>/mcp
         .route("/mcp", post(mcp::handle_post).get(mcp::handle_get).delete(mcp::handle_delete))
@@ -928,6 +940,25 @@ async fn post_environment(
 #[derive(Debug, Deserialize)]
 struct AuthTokenInput {
     token: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CourseInput {
+    /// Heading to hold. Omit / null to release to manual helm.
+    heading_true_deg: Option<f64>,
+}
+
+/// Engage or release the backend course-hold from the UI (the "Take Helm"
+/// button posts an empty body to release). Mirrors the MCP set_course tool.
+async fn post_course(
+    State(state): State<AppState>,
+    body: Option<Json<CourseInput>>,
+) -> Json<FullSimState> {
+    let mut current = state.sim_state.write().unwrap();
+    current.ap_heading_deg = body
+        .and_then(|Json(c)| c.heading_true_deg)
+        .map(|h| h.rem_euclid(360.0));
+    Json(current.clone())
 }
 
 /// Fill both diesel tanks to capacity.

@@ -56,6 +56,9 @@ export type BoatState = {
     xteM?: number | null;
     ageS: number;
   } | null;
+  /** Backend course-hold heading (MCP set_course). Non-null = an agent has
+   *  the helm; manual steering is overridden until released. */
+  apHeadingDeg?: number | null;
 };
 
 export type SimSettings = {

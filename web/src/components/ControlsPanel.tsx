@@ -121,6 +121,54 @@ export function ControlsPanel() {
         </div>
       )}
 
+      {(boat.apHeadingDeg != null || (boat.routeGuidance && boat.routeGuidance.ageS < 15)) && (
+        <div style={{
+          background: 'rgba(168, 85, 247, 0.18)',
+          border: '1px solid rgba(168, 85, 247, 0.55)',
+          borderRadius: '6px',
+          padding: '8px 10px',
+          fontSize: '12px',
+          fontWeight: 'bold',
+          color: '#e9d5ff',
+          marginBottom: '12px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '6px',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#a855f7', display: 'inline-block' }} />
+            {boat.routeGuidance && boat.routeGuidance.ageS < 15
+              ? `ROUTE STEERING — brg ${boat.routeGuidance.bearingTrueDeg?.toFixed(0) ?? '—'}°`
+              : `AGENT AT HELM — holding ${boat.apHeadingDeg?.toFixed(0)}°`}
+          </div>
+          <button
+            onClick={async () => {
+              try {
+                await fetch('/v1/sim/course', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({}),
+                });
+              } catch (e) {
+                console.error('Take helm failed:', e);
+              }
+            }}
+            style={{
+              padding: '5px 10px',
+              background: 'rgba(255,255,255,0.14)',
+              border: '1px solid rgba(255,255,255,0.3)',
+              borderRadius: '4px',
+              color: '#fff',
+              fontSize: '11px',
+              fontWeight: 'bold',
+              cursor: 'pointer',
+            }}
+          >
+            ⎈ TAKE HELM (release to manual)
+          </button>
+        </div>
+      )}
+
       <Section title="Environment" icon={<Wind size={15} />} storageKey="skiff.section.env">
       <ControlGroup icon={<MapPin size={16} />} title="GPS / Data Source">
         <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
