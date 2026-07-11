@@ -58,7 +58,9 @@ export function SimulatorScene() {
       <Island />
       <FlowVisualization />
       <Trail />
-      {settings.showVectors && <Vectors />}
+      {/* Always mounted — Vectors shows wind regardless, and hides the
+          boat-motion arrows internally when the Vectors toggle is off. */}
+      <Vectors />
       <SimulationLoop controlsRef={controlsRef} />
       <OrbitControls ref={controlsRef} enableDamping dampingFactor={0.08} maxPolarAngle={Math.PI * 0.48} />
     </Canvas>

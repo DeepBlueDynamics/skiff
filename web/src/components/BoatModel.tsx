@@ -66,6 +66,9 @@ export function BoatModel() {
   // Keep track of accumulated propeller angles to ensure smooth rotation
   const propPortAngle = useRef(0);
   const propStbdAngle = useRef(0);
+  // Mainsheet-tackle rebuild guard (rebuild only when car or vang changes)
+  const lastRigCarX = useRef(NaN);
+  const lastRigVang = useRef(NaN);
 
   // Load the GLB file from the public directory
   const { scene } = useGLTF('/lagoon-450s.glb');
@@ -383,13 +386,33 @@ export function BoatModel() {
           _swivelQuat.setFromUnitVectors(_downDir, _ropeDir);
           boomShackleNode.quaternion.copy(_swivelQuat).multiply(boomShackleQuat);
         }
-        // Line as a sagging tube along the bezier top→mid→bottom.
-        if (mainsheetLine) {
-          _sheetCurve.v0.copy(_topP);
-          _sheetCurve.v1.copy(_midP);
-          _sheetCurve.v2.copy(_botP);
+        // Reeved block-and-tackle: the mainsheet/vang laces back and forth
+        // between the boom-end block (077) and the traveler car block in
+        // FALLS parts, then a tail hangs off. Vang tension straightens the
+        // falls (taut) or lets them bow (eased). Rebuilt only when the car
+        // moves or the vang changes.
+        if (mainsheetLine && (lastRigCarX.current !== carX || lastRigVang.current !== vang)) {
+          lastRigCarX.current = carX;
+          lastRigVang.current = vang;
+          const FALLS = 4;
+          const SHEAVE = 0.035; // athwartships spacing between reeved parts
+          const bow = (1 - vang) * 0.14; // sag amount when eased
+          const pts: THREE.Vector3[] = [];
+          for (let i = 0; i < FALLS; i++) {
+            const off = (i - (FALLS - 1) / 2) * SHEAVE;
+            const top = new THREE.Vector3(_topP.x + off, _topP.y, _topP.z);
+            const bot = new THREE.Vector3(_botP.x + off, _botP.y, _botP.z - 0.02);
+            const mid = top.clone().add(bot).multiplyScalar(0.5);
+            mid.y -= bow;
+            if (i % 2 === 0) pts.push(top, mid, bot);
+            else pts.push(bot, mid, top);
+          }
+          // Tail: from the last block down along the car.
+          const last = pts[pts.length - 1];
+          pts.push(new THREE.Vector3(last.x + 0.04, last.y - 0.35, last.z + 0.05));
+          const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal', 0.4);
           const oldGeo = mainsheetLine.geometry;
-          mainsheetLine.geometry = new THREE.TubeGeometry(_sheetCurve, 16, 0.012, 6, false);
+          mainsheetLine.geometry = new THREE.TubeGeometry(curve, 48, 0.011, 6, false);
           oldGeo.dispose();
           mainsheetLine.position.set(0, 0, 0);
           mainsheetLine.scale.set(1, 1, 1);

@@ -9,32 +9,41 @@ const MPS_TO_KNOT = 1.9438;
 export function Vectors() {
   const boat = useSimulator((state) => state.boat);
   const settings = useSimulator((state) => state.settings);
-  if (!settings.showVectors) return null;
 
   const windGround = vectorFromToDeg(settings.windSpeedMps, settings.windToDeg);
   const current = vectorFromToDeg(settings.currentSpeedMps, settings.currentToDeg);
   const windWater = windOverWater(windGround, current);
 
+  // Wind arrows always show (wind is primary situational awareness); the
+  // Vectors toggle only hides the boat-motion + current arrows.
+  const showBoatVectors = settings.showVectors;
+
   // Arrows stacked in the band above the coachroof and below/around the boom,
   // riding the hull's heave. Hover an arrow HEAD for its name + magnitude.
   return (
     <group position={[boat.position.x, boat.bobM, -boat.position.y]}>
-      <Arrow
-        directionDeg={boat.headingDeg}
-        length={5}
-        color="#f4f7f7"
-        y={3.5}
-        label="Heading"
-        value={`${boat.headingDeg.toFixed(0)}°`}
-      />
-      <Arrow
-        directionDeg={boat.cogDeg}
-        length={Math.max(2, boat.sogMps * 2.2)}
-        color="#ffcf5a"
-        y={3.75}
-        label="Course over ground"
-        value={`${(boat.sogMps * MPS_TO_KNOT).toFixed(1)} kt @ ${boat.cogDeg.toFixed(0)}°`}
-      />
+      {/* Boat-motion arrows — hidden by the Vectors toggle */}
+      {showBoatVectors && (
+        <>
+          <Arrow
+            directionDeg={boat.headingDeg}
+            length={5}
+            color="#f4f7f7"
+            y={3.5}
+            label="Heading"
+            value={`${boat.headingDeg.toFixed(0)}°`}
+          />
+          <Arrow
+            directionDeg={boat.cogDeg}
+            length={Math.max(2, boat.sogMps * 2.2)}
+            color="#ffcf5a"
+            y={3.75}
+            label="Course over ground"
+            value={`${(boat.sogMps * MPS_TO_KNOT).toFixed(1)} kt @ ${boat.cogDeg.toFixed(0)}°`}
+          />
+        </>
+      )}
+      {/* Wind arrows ALWAYS show (primary situational awareness) */}
       <Arrow
         directionDeg={vectorToDeg(windGround)}
         length={Math.max(2.5, vectorMagnitude(windGround) * 0.55)}
@@ -51,7 +60,7 @@ export function Vectors() {
         label="Wind over water"
         value={`${(vectorMagnitude(windWater) * MPS_TO_KNOT).toFixed(1)} kt → ${vectorToDeg(windWater).toFixed(0)}°`}
       />
-      {settings.showCurrent && (
+      {showBoatVectors && settings.showCurrent && (
         <Arrow
           directionDeg={settings.currentToDeg}
           length={Math.max(1.5, settings.currentSpeedMps * 3.5)}

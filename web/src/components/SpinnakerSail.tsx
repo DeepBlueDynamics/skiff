@@ -438,6 +438,7 @@ export function SpinnakerSail() {
   // Sail-force arrow hover toast state
   const forceTipRef = useRef(new THREE.Vector3());
   const forceMagRef = useRef(0);
+  const forceAnchorRef = useRef<THREE.Group>(null); // follows the arrow tip
   const [forceHover, setForceHover] = useState(false);
   const [forceToastText, setForceToastText] = useState('');
 
@@ -946,8 +947,15 @@ export function SpinnakerSail() {
           forceArrow.setLength(len, 0.6, 0.3);
           forceTipRef.current.copy(FORCE_ARROW_ANCHOR).addScaledVector(_forceDir, len);
           forceMagRef.current = mag;
+          // Move the hover hit-target + toast group to the live arrow tip.
+          if (forceAnchorRef.current) {
+            forceAnchorRef.current.visible = true;
+            forceAnchorRef.current.position.copy(forceTipRef.current);
+          }
+          if (forceHover) setForceToastText(`${(mag / 1000).toFixed(2)} kN`);
         } else {
           forceArrow.visible = false;
+          if (forceAnchorRef.current) forceAnchorRef.current.visible = false;
         }
       }
 
@@ -1296,26 +1304,26 @@ export function SpinnakerSail() {
       {settings.showForceArrows && (
         <>
           <primitive object={forceArrow} />
-          <mesh
-            position={forceTipRef.current}
-            onPointerOver={(e) => {
-              e.stopPropagation();
-              setForceHover(true);
-              setForceToastText(
-                `${(forceMagRef.current / 1000).toFixed(2)} kN`
-              );
-              document.body.style.cursor = 'pointer';
-            }}
-            onPointerOut={() => {
-              setForceHover(false);
-              document.body.style.cursor = 'auto';
-            }}
-          >
-            <sphereGeometry args={[0.5, 8, 8]} />
-            <meshBasicMaterial transparent opacity={0} depthWrite={false} />
-          </mesh>
-          {forceHover && (
-            <Html position={forceTipRef.current} center style={{ pointerEvents: 'none' }}>
+          {/* Group follows the live arrow tip each frame (position set in
+              useFrame) so the hover hit-target + toast track the moving head. */}
+          <group ref={forceAnchorRef}>
+            <mesh
+              onPointerOver={(e) => {
+                e.stopPropagation();
+                setForceHover(true);
+                setForceToastText(`${(forceMagRef.current / 1000).toFixed(2)} kN`);
+                document.body.style.cursor = 'pointer';
+              }}
+              onPointerOut={() => {
+                setForceHover(false);
+                document.body.style.cursor = 'auto';
+              }}
+            >
+              <sphereGeometry args={[0.7, 8, 8]} />
+              <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+            </mesh>
+            {forceHover && (
+              <Html center style={{ pointerEvents: 'none' }}>
               <div
                 style={{
                   background: 'rgba(8, 22, 32, 0.92)',
@@ -1334,8 +1342,9 @@ export function SpinnakerSail() {
                 </div>
                 <div style={{ fontFamily: 'monospace' }}>{forceToastText}</div>
               </div>
-            </Html>
-          )}
+              </Html>
+            )}
+          </group>
         </>
       )}
     </group>
