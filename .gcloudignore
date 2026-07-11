@@ -1,4 +1,6 @@
 # Keep Cloud Build uploads lean — the Dockerfile builds everything fresh.
+# NOTE: when this file exists, gcloud does NOT also honor .gitignore, so every
+# secret/large path must be listed here explicitly.
 .git/
 target/
 web/node_modules/
@@ -9,3 +11,17 @@ media/
 plan/
 mcp/
 *.zip
+
+# Secrets — must never be uploaded to Cloud Build
+id_ed25519*
+id_rsa*
+id_ecdsa*
+*.pem
+skiff_boat_state.json
+
+# OpenCPN plugin subsystem + Pi provisioning — not part of the skiff container
+# (the Dockerfile only COPYs web/, src/, and the Cargo manifests).
+opencpn/
+pi-provision/
+DEPLOYMENT.md
+runbook_pi.md
