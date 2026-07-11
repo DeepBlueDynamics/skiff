@@ -28,6 +28,7 @@ const TACK_ANCHOR = new THREE.Vector3(-0.041, 2.028, 7.321); // Object.541 tack 
 // In this frame +x is PORT, and -x is STARBOARD.
 const SHEET_LEAD_PORT = new THREE.Vector3(2.459, 2.108, -4.033); // +x = PORT sheet lead
 const _forceDir = new THREE.Vector3();
+const FORCE_ARROW_ANCHOR = new THREE.Vector3();
 const SHEET_LEAD_STARBOARD = new THREE.Vector3(-2.459, 2.108, -4.033); // -x = STARBOARD sheet lead
 
 class Particle {
@@ -928,13 +929,16 @@ export function SpinnakerSail() {
         const mag = f.length();
         if (mag > 1) {
           forceArrow.visible = true;
-          forceArrow.position.copy(filteredCentroid.current);
+          // Anchor OVER THE BOAT in the arrow band (boom height), not at the
+          // sail centroid — so it's always in view. Still swings/jiggles with
+          // the live force direction. (Sail-local glTF frame; y is up.)
+          FORCE_ARROW_ANCHOR.set(0, 5.5, -2.0);
+          forceArrow.position.copy(FORCE_ARROW_ANCHOR);
           _forceDir.copy(f).multiplyScalar(1 / mag);
           forceArrow.setDirection(_forceDir);
-          forceArrow.setLength(Math.min(8, Math.max(0.8, mag / 400)), 0.6, 0.3);
-          forceTipRef.current
-            .copy(filteredCentroid.current)
-            .addScaledVector(_forceDir, Math.min(8, Math.max(0.8, mag / 400)));
+          const len = Math.min(6, Math.max(0.8, mag / 400));
+          forceArrow.setLength(len, 0.6, 0.3);
+          forceTipRef.current.copy(FORCE_ARROW_ANCHOR).addScaledVector(_forceDir, len);
           forceMagRef.current = mag;
         } else {
           forceArrow.visible = false;

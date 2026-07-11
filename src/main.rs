@@ -595,13 +595,21 @@ async fn main() -> anyhow::Result<()> {
             //   2. Manual course-hold (`set_course` / ap_heading_deg).
             //   3. Manual helm.
             // Browser AP helm posts are ignored while 1 or 2 hold.
-            let route_target = state.route_guidance.as_ref().and_then(|g| {
-                let fresh = state
-                    .route_guidance_at_s
-                    .map(|t| state.elapsed_s - t < 15.0)
-                    .unwrap_or(false);
-                if fresh { g.bearing_true_deg } else { None }
-            });
+            // Stale route guidance is nulled here (not just ignored) so the
+            // telemetry never lies — the UI 'route steering' indicator and any
+            // agent reading get_state see the honest state after a route ends.
+            let route_stale = state
+                .route_guidance_at_s
+                .map(|t| state.elapsed_s - t >= 15.0)
+                .unwrap_or(true);
+            if route_stale && state.route_guidance.is_some() {
+                state.route_guidance = None;
+                state.route_guidance_at_s = None;
+            }
+            let route_target = state
+                .route_guidance
+                .as_ref()
+                .and_then(|g| g.bearing_true_deg);
             let effective_helm = if let Some(target) = route_target.or(state.ap_heading_deg) {
                 let mut err = target - state.heading_true_deg;
                 err = ((err + 180.0).rem_euclid(360.0)) - 180.0;

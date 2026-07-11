@@ -340,8 +340,11 @@ function SimulationLoop({ controlsRef }: { controlsRef: React.RefObject<any> }) 
           castOffHeadToWind: false,
           mainDropped: boat.mainDropped, // preserve UI checkbox state
           trail: data.trail.map((t: any) => ({ x: t.east, y: t.north })),
-          thrustPort: data.control.thrust_port,
-          thrustStbd: data.control.thrust_stbd,
+          // EFFECTIVE thrust: when an agent holds the engines (ap_thrust_n),
+          // that's what the physics runs — so propellers, engine HUD, fuel
+          // burn and range all read it, not the stale tab-posted control.
+          thrustPort: data.ap_thrust_n ?? data.control.thrust_port,
+          thrustStbd: data.ap_thrust_n ?? data.control.thrust_stbd,
           stabilityState: data.stability_state,
           slamWarning: data.slam_warning,
           simTimeS: data.elapsed_s,
