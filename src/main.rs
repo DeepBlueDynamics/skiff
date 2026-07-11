@@ -182,6 +182,12 @@ pub struct FullSimState {
     /// conning out of a tight anchorage must be able to depower it.
     #[serde(default)]
     pub ap_sail_furled: Option<bool>,
+    /// Autopilot mode toggle. false (default) = HEADING hold (steer the
+    /// compass heading to target; the boat crabs with set/drift). true =
+    /// TRACK hold (steer COURSE-OVER-GROUND to target; carries standing
+    /// rudder to make good the intended track through current).
+    #[serde(default)]
+    pub ap_track_hold: bool,
 }
 
 /// Lagoon 450S draft (m).
@@ -347,6 +353,7 @@ fn create_initial_state() -> FullSimState {
         ap_heading_deg: None,
         ap_thrust_n: None,
         ap_sail_furled: None,
+        ap_track_hold: false,
     }
 }
 
@@ -682,7 +689,16 @@ async fn main() -> anyhow::Result<()> {
                 .as_ref()
                 .and_then(|g| g.bearing_true_deg);
             let effective_helm = if let Some(target) = route_target.or(state.ap_heading_deg) {
-                let mut err = target - state.heading_true_deg;
+                // TRACK hold steers course-over-ground to target (crabs the
+                // bow up-current); HEADING hold steers the compass heading
+                // (boat drifts with set). COG is last-tick (1-step lag, fine);
+                // fall back to heading below ~1.5 kt where COG is noise.
+                let feedback = if state.ap_track_hold && state.sog_mps > 0.75 {
+                    state.cog_true_deg
+                } else {
+                    state.heading_true_deg
+                };
+                let mut err = target - feedback;
                 err = ((err + 180.0).rem_euclid(360.0)) - 180.0;
                 (-err * 0.06).clamp(-1.0, 1.0)
             } else {
@@ -1043,23 +1059,32 @@ struct AuthTokenInput {
 struct CourseInput {
     /// Heading to hold. Omit / null to release to manual helm.
     heading_true_deg: Option<f64>,
+    /// Toggle track-hold vs heading-hold (independent of engaging a course).
+    track_hold: Option<bool>,
 }
 
-/// Engage or release the backend course-hold from the UI (the "Take Helm"
-/// button posts an empty body to release). Mirrors the MCP set_course tool.
+/// Engage/release the backend course-hold and toggle track-hold from the UI.
+/// A truly empty body ("Take Helm") releases to manual. Mirrors MCP set_course.
 async fn post_course(
     State(state): State<AppState>,
     body: Option<Json<CourseInput>>,
 ) -> Json<FullSimState> {
     let mut current = state.sim_state.write().unwrap();
-    match body.and_then(|Json(c)| c.heading_true_deg) {
+    let (heading, track) = match body {
+        Some(Json(c)) => (c.heading_true_deg, c.track_hold),
+        None => (None, None),
+    };
+    if let Some(t) = track {
+        current.ap_track_hold = t; // mode toggle, independent of engaging
+    }
+    match heading {
         Some(h) => current.ap_heading_deg = Some(h.rem_euclid(360.0)),
-        None => {
-            // Empty body = the UI "Take Helm" button: full manual return,
-            // release rudder AND engine overrides.
+        None if track.is_none() => {
+            // Truly empty = "Take Helm": full manual return.
             current.ap_heading_deg = None;
             current.ap_thrust_n = None;
         }
+        None => {} // toggle-only post: leave the active hold as-is
     }
     Json(current.clone())
 }

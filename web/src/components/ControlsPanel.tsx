@@ -512,6 +512,21 @@ export function ControlsPanel() {
             </label>
           );
         })()}
+        {/* Autopilot mode: heading-hold vs track-hold (corrects set/drift). */}
+        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '12px', marginBottom: '8px', color: 'var(--ink)' }}>
+          <input
+            type="checkbox"
+            checked={!!boat.apTrackHold}
+            onChange={(e) => {
+              fetch('/v1/sim/course', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ track_hold: e.target.checked }),
+              }).catch(() => {});
+            }}
+          />
+          Track hold <span style={{ color: 'rgba(255,255,255,0.45)', fontSize: '11px' }}>(correct set/drift)</span>
+        </label>
         {boat.routeGuidance && boat.routeGuidance.ageS < 15 && (
           <div style={{
             background: 'rgba(14, 165, 233, 0.12)',

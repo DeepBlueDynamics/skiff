@@ -62,6 +62,8 @@ export type BoatState = {
   /** Backend engine override (MCP set_engines). Non-null = an agent runs the
    *  engines; the throttle sliders are overridden until released. */
   apThrustN?: number | null;
+  /** Autopilot mode: true = track-hold (correct set/drift), false = heading-hold. */
+  apTrackHold?: boolean;
 };
 
 export type SimSettings = {

@@ -174,15 +174,24 @@ async fn call_tool(state: &AppState, name: &str, args: &Value) -> anyhow::Result
         }
         "set_course" => {
             let mut sim = state.sim_state.write().unwrap();
+            // Optional mode toggle (independent of engaging a course).
+            if let Some(t) = args.get("track_hold").and_then(|v| v.as_bool()) {
+                sim.ap_track_hold = t;
+            }
+            let track = sim.ap_track_hold;
             match num(args, "heading_true_deg") {
                 Some(h) => {
                     let h = h.rem_euclid(360.0);
                     sim.ap_heading_deg = Some(h);
-                    Ok(json!({ "course_hold": h, "note": "backend autopilot engaged" }).to_string())
+                    Ok(json!({ "course_hold": h, "track_hold": track, "note": if track { "track-hold engaged (steers course-over-ground)" } else { "heading-hold engaged" } }).to_string())
                 }
                 None => {
-                    sim.ap_heading_deg = None;
-                    Ok(json!({ "course_hold": null, "note": "course hold released, manual helm" }).to_string())
+                    // Toggle-only call keeps the active hold; a bare release
+                    // (no heading, no track arg) drops to manual.
+                    if args.get("track_hold").is_none() {
+                        sim.ap_heading_deg = None;
+                    }
+                    Ok(json!({ "course_hold": sim.ap_heading_deg, "track_hold": track, "note": "updated" }).to_string())
                 }
             }
         }
@@ -286,11 +295,12 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "set_course",
-            "description": "Engage the backend course-hold: steer to a true heading (works headless, overrides manual helm). Call with no arguments to release back to manual helm.",
+            "description": "Engage the backend course-hold: steer to a true heading/course (headless, overrides manual helm). track_hold toggles the mode: false = HEADING hold (boat crabs with set/drift); true = TRACK hold (steers course-over-ground, carries rudder to make good the line through current). Call with no arguments to release to manual; pass only track_hold to flip the mode without disengaging.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "heading_true_deg": { "type": "number", "description": "True heading to hold (0-360). Omit to disengage." }
+                    "heading_true_deg": { "type": "number", "description": "True heading/course to hold (0-360). Omit to disengage (unless toggling track_hold)." },
+                    "track_hold": { "type": "boolean", "description": "true = track-hold (correct set/drift), false = heading-hold." }
                 }
             }
         },

@@ -363,6 +363,7 @@ function SimulationLoop({ controlsRef }: { controlsRef: React.RefObject<any> }) 
               : null,
           apHeadingDeg: data.ap_heading_deg ?? null,
           apThrustN: data.ap_thrust_n ?? null,
+          apTrackHold: data.ap_track_hold ?? false,
         });
       }
     } catch (e) {
