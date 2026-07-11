@@ -80,6 +80,8 @@ export type SimSettings = {
   travelerPct: number;
   showCurrent: boolean;
   showVectors: boolean;
+  /** Wind flow particles (independent of the Vectors arrow toggle). */
+  showWind: boolean;
   dataSource: 'real' | 'simulated';
   gpsLat: number;
   gpsLon: number;

@@ -40,6 +40,7 @@ export const useSimulator = create<SimulatorStore>((set) => ({
     travelerPct: 0,
     showCurrent: true,
     showVectors: true,
+    showWind: true,
     dataSource: 'simulated',
     // Prickly Bay anchorage, Grenada — matches the backend spawn.
     gpsLat: 12.001,

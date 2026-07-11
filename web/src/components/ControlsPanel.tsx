@@ -327,6 +327,10 @@ export function ControlsPanel() {
       )}
       <div className="toggle-row">
         <label>
+          <input type="checkbox" checked={settings.showWind} onChange={(e) => setSetting('showWind', e.target.checked)} />
+          Wind
+        </label>
+        <label>
           <input type="checkbox" checked={settings.showVectors} onChange={(e) => setSetting('showVectors', e.target.checked)} />
           Vectors
         </label>

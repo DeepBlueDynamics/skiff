@@ -190,7 +190,7 @@ export function FlowVisualization() {
     const stbN = -Math.sin(hRad);
 
     // 3. Wind particles (golden, 3D air band)
-    if (windMeshRef.current && settings.showVectors) {
+    if (windMeshRef.current && settings.showWind) {
       const mesh = windMeshRef.current;
       for (let i = 0; i < windCount; i++) {
         const p = windParticles[i];
@@ -424,7 +424,7 @@ export function FlowVisualization() {
       {/* renderOrder keeps every particle layer drawing AFTER the water plane —
           otherwise the transparent sort flips with camera angle and the water
           washes the particles out (same failure class as the sail clipping). */}
-      {settings.showVectors && (
+      {settings.showWind && (
         <instancedMesh ref={windMeshRef} args={[null as any, null as any, windCount]} renderOrder={3} frustumCulled={false} castShadow={false} receiveShadow={false}>
           <boxGeometry args={[0.07, 0.07, 0.07]} />
           <meshBasicMaterial
