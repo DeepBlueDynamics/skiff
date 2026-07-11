@@ -133,6 +133,7 @@ tar czf - --exclude=./target --exclude=./.git \
   --exclude=./web/node_modules --exclude=./web/node_modules.broken-optional \
   --exclude=./web/dist --exclude=./models --exclude=./media \
   --exclude=./reports --exclude='./*.zip' --exclude='./id_ed25519*' \
+  --exclude=./skiff_boat_state.json \
   . | ssh skiff-pi 'tar xzf - -C ~/skiff'
 ssh skiff-pi '. ~/.cargo/env && cd ~/skiff && cargo build --release --bin skiff'
 # only if web/ changed:

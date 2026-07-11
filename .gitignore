@@ -5,6 +5,12 @@ web/dist
 skiff.zip
 *.log
 reports/
-id_ed25519_pi
-id_ed25519_pi.pub
+# SSH keys for Pi access — never commit (private keys must stay local)
+id_ed25519*
+id_rsa*
+id_ecdsa*
+*.pem
 skiff_boat_state.json
+opencpn/bridge/build/
+opencpn/bridge/cache/
+opencpn/ocpn-bridge-libs/
