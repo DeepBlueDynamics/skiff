@@ -533,6 +533,8 @@ async fn main() -> anyhow::Result<()> {
     let bathy_physics = bathy.clone();
     tokio::spawn(async move {
         let mut last_tick = tokio::time::Instant::now();
+        // Track-hold outer-loop state: the slowly-crabbed commanded heading.
+        let mut track_cmd_heading: Option<f64> = None;
         loop {
             tokio::time::sleep(Duration::from_millis(50)).await;
             let now = tokio::time::Instant::now();
@@ -688,20 +690,30 @@ async fn main() -> anyhow::Result<()> {
                 .route_guidance
                 .as_ref()
                 .and_then(|g| g.bearing_true_deg);
+            let norm180 = |a: f64| ((a + 180.0).rem_euclid(360.0)) - 180.0;
             let effective_helm = if let Some(target) = route_target.or(state.ap_heading_deg) {
-                // TRACK hold steers course-over-ground to target (crabs the
-                // bow up-current); HEADING hold steers the compass heading
-                // (boat drifts with set). COG is last-tick (1-step lag, fine);
-                // fall back to heading below ~1.5 kt where COG is noise.
-                let feedback = if state.ap_track_hold && state.sog_mps > 0.75 {
-                    state.cog_true_deg
+                if state.ap_track_hold && state.sog_mps > 0.75 {
+                    // TRACK hold — cascade: a SLOW outer loop crabs a commanded
+                    // heading to null the course-over-ground error; the fast,
+                    // stable inner heading loop steers to it. (A plain
+                    // P-controller straight on COG oscillates because COG lags
+                    // heading.) The commanded crab is clamped to ±60°.
+                    let cmd = track_cmd_heading.get_or_insert(state.heading_true_deg);
+                    let cog_err = norm180(target - state.cog_true_deg);
+                    *cmd += (cog_err * 0.15 * dt).clamp(-0.5, 0.5);
+                    let crab = norm180(*cmd - target).clamp(-60.0, 60.0);
+                    *cmd = target + crab;
+                    let err = norm180(*cmd - state.heading_true_deg);
+                    (-err * 0.06).clamp(-1.0, 1.0)
                 } else {
-                    state.heading_true_deg
-                };
-                let mut err = target - feedback;
-                err = ((err + 180.0).rem_euclid(360.0)) - 180.0;
-                (-err * 0.06).clamp(-1.0, 1.0)
+                    // HEADING hold — steer the compass heading (boat crabs
+                    // with set/drift). Reset the track integrator.
+                    track_cmd_heading = None;
+                    let err = norm180(target - state.heading_true_deg);
+                    (-err * 0.06).clamp(-1.0, 1.0)
+                }
             } else {
+                track_cmd_heading = None;
                 state.control.helm
             };
             // Engine override wins over the browser tab's thrust posts (same
