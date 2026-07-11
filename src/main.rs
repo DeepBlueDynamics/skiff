@@ -252,6 +252,29 @@ fn sail_override_from_store(
     }
 }
 
+/// Where the boat's live position is checkpointed for restart-safe resume.
+const PERSIST_PATH: &str = "skiff_boat_state.json";
+/// Ignore a checkpoint older than this on boot (stale = start fresh).
+const PERSIST_MAX_AGE_S: i64 = 900;
+
+fn save_persisted_state(state: &FullSimState) {
+    if let Ok(json) = serde_json::to_string(state) {
+        let _ = std::fs::write(PERSIST_PATH, json);
+    }
+}
+
+fn load_persisted_state() -> Option<FullSimState> {
+    let text = std::fs::read_to_string(PERSIST_PATH).ok()?;
+    let saved: FullSimState = serde_json::from_str(&text).ok()?;
+    // Only resume a recent checkpoint.
+    let age = (Utc::now() - saved.at).num_seconds();
+    if age.abs() > PERSIST_MAX_AGE_S {
+        tracing::info!(age_s = age, "persisted boat state too old — starting fresh");
+        return None;
+    }
+    Some(saved)
+}
+
 fn create_initial_state() -> FullSimState {
     let mut env = test_env();
     env.wind_ground_mps = Vec2Mps::from_speed_to_deg(7.2, 150.0); // 14 knots from 150 deg
@@ -346,7 +369,37 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("SIGNALK_HOST not configured. Delta updates will not be sent.");
     }
 
-    let shared_state = Arc::new(RwLock::new(create_initial_state()));
+    // Resume the boat where she was before a restart, so a redeploy doesn't
+    // teleport her back to the anchorage mid-passage (which grounds her).
+    let mut boot_state = create_initial_state();
+    if let Some(saved) = load_persisted_state() {
+        boot_state.pos = saved.pos;
+        boot_state.cat_state = saved.cat_state;
+        boot_state.heading_true_deg = saved.heading_true_deg;
+        boot_state.local_pos_m = saved.local_pos_m;
+        boot_state.fuel_port_l = saved.fuel_port_l;
+        boot_state.fuel_stbd_l = saved.fuel_stbd_l;
+        boot_state.env = saved.env;
+        boot_state.manual_env_override = saved.manual_env_override;
+        tracing::info!(
+            lat = boot_state.pos.lat_deg,
+            lon = boot_state.pos.lon_deg,
+            "resumed boat position from persisted state (restart-safe)"
+        );
+    }
+    let shared_state = Arc::new(RwLock::new(boot_state));
+
+    // Persist the boat every 5 s so a restart can resume it.
+    {
+        let state_for_persist = shared_state.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                let snapshot = { state_for_persist.read().unwrap().clone() };
+                save_persisted_state(&snapshot);
+            }
+        });
+    }
     let shared_sail_wrench: Arc<RwLock<Option<StoredSailWrench>>> = Arc::new(RwLock::new(None));
 
     // Meridian environment provider, authenticated by the USER's login JWT
