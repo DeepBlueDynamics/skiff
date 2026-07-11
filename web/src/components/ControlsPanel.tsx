@@ -623,7 +623,9 @@ export function ControlsPanel() {
           <strong>
             {(() => {
               const f = (t: number) => Math.pow(Math.min(1, Math.abs(t) / 3000), 1.5);
-              const lph = settings.fuelBurnMaxLph * (f(input.thrustPort) + f(input.thrustStbd));
+              const tp = boat.apThrustN ?? input.thrustPort;
+              const ts = boat.apThrustN ?? input.thrustStbd;
+              const lph = settings.fuelBurnMaxLph * (f(tp) + f(ts));
               return `${lph.toFixed(1)} L/h · ${(lph * 0.2642).toFixed(1)} gal/h`;
             })()}
           </strong>
@@ -637,7 +639,9 @@ export function ControlsPanel() {
           <strong>
             {(() => {
               const f = (t: number) => Math.pow(Math.min(1, Math.abs(t) / 3000), 1.5);
-              const lph = settings.fuelBurnMaxLph * (f(input.thrustPort) + f(input.thrustStbd));
+              const tp = boat.apThrustN ?? input.thrustPort;
+              const ts = boat.apThrustN ?? input.thrustStbd;
+              const lph = settings.fuelBurnMaxLph * (f(tp) + f(ts));
               if (lph <= 0.05) return '∞ (sailing)';
               const fuel = (boat.fuelPortL ?? 275) + (boat.fuelStbdL ?? 275);
               const hours = fuel / lph;
