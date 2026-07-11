@@ -121,7 +121,7 @@ export function ControlsPanel() {
         </div>
       )}
 
-      {(boat.apHeadingDeg != null || (boat.routeGuidance && boat.routeGuidance.ageS < 15)) && (
+      {(boat.apHeadingDeg != null || boat.apThrustN != null || (boat.routeGuidance && boat.routeGuidance.ageS < 15)) && (
         <div style={{
           background: 'rgba(168, 85, 247, 0.18)',
           border: '1px solid rgba(168, 85, 247, 0.55)',
@@ -139,7 +139,10 @@ export function ControlsPanel() {
             <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#a855f7', display: 'inline-block' }} />
             {boat.routeGuidance && boat.routeGuidance.ageS < 15
               ? `ROUTE STEERING — brg ${boat.routeGuidance.bearingTrueDeg?.toFixed(0) ?? '—'}°`
-              : `AGENT AT HELM — holding ${boat.apHeadingDeg?.toFixed(0)}°`}
+              : boat.apHeadingDeg != null
+              ? `AGENT AT HELM — holding ${boat.apHeadingDeg?.toFixed(0)}°`
+              : 'AGENT AT ENGINES'}
+            {boat.apThrustN != null ? ` · eng ${(boat.apThrustN / 1000).toFixed(1)} kN` : ''}
           </div>
           <button
             onClick={async () => {

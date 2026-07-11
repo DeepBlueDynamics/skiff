@@ -186,6 +186,20 @@ async fn call_tool(state: &AppState, name: &str, args: &Value) -> anyhow::Result
                 }
             }
         }
+        "set_engines" => {
+            let mut sim = state.sim_state.write().unwrap();
+            match num(args, "thrust_n") {
+                Some(t) => {
+                    let t = t.clamp(-3000.0, 3000.0);
+                    sim.ap_thrust_n = Some(t);
+                    Ok(json!({ "engine_override_n": t, "note": "both engines held by agent (tab-proof)" }).to_string())
+                }
+                None => {
+                    sim.ap_thrust_n = None;
+                    Ok(json!({ "engine_override_n": null, "note": "engine override released to manual" }).to_string())
+                }
+            }
+        }
         "refuel" => {
             let mut sim = state.sim_state.write().unwrap();
             sim.fuel_port_l = TANK_CAPACITY_L;
@@ -271,6 +285,16 @@ fn tool_definitions() -> Value {
                 "type": "object",
                 "properties": {
                     "heading_true_deg": { "type": "number", "description": "True heading to hold (0-360). Omit to disengage." }
+                }
+            }
+        },
+        {
+            "name": "set_engines",
+            "description": "Engine override: run BOTH engines at a thrust (N, -3000..3000), overriding the browser tab (tab-proof, like set_course). Omit thrust_n to release to manual.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "thrust_n": { "type": "number", "description": "Both-engine thrust in Newtons. Omit to disengage." }
                 }
             }
         },

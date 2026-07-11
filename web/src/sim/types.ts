@@ -59,6 +59,9 @@ export type BoatState = {
   /** Backend course-hold heading (MCP set_course). Non-null = an agent has
    *  the helm; manual steering is overridden until released. */
   apHeadingDeg?: number | null;
+  /** Backend engine override (MCP set_engines). Non-null = an agent runs the
+   *  engines; the throttle sliders are overridden until released. */
+  apThrustN?: number | null;
 };
 
 export type SimSettings = {

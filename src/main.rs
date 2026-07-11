@@ -171,6 +171,11 @@ pub struct FullSimState {
     /// SimControlInput so browser control posts can't silently clear it.
     #[serde(default)]
     pub ap_heading_deg: Option<f64>,
+    /// Backend engine override (MCP `set_engines`): when Some, BOTH engines
+    /// run at this thrust (N), overriding the browser tab's control posts.
+    /// Same tab-proof rationale as ap_heading_deg.
+    #[serde(default)]
+    pub ap_thrust_n: Option<f64>,
 }
 
 /// Lagoon 450S draft (m).
@@ -311,6 +316,7 @@ fn create_initial_state() -> FullSimState {
         route_guidance: None,
         route_guidance_at_s: None,
         ap_heading_deg: None,
+        ap_thrust_n: None,
     }
 }
 
@@ -567,15 +573,20 @@ async fn main() -> anyhow::Result<()> {
                 wave_pose,
             };
             // Fuel: burn ∝ (thrust fraction)^1.5 (≈ power curve) per engine.
-            // A dry tank kills its engine — effective thrust forced to zero.
+            // Uses EFFECTIVE thrust (engine override included) so an
+            // agent-run engine actually consumes diesel.
             {
+                let (burn_port, burn_stbd) = match state.ap_thrust_n {
+                    Some(t) => (t, t),
+                    None => (state.control.thrust_port, state.control.thrust_stbd),
+                };
                 let burn_max = state.control.fuel_burn_max_lph.clamp(0.0, 40.0);
                 let frac = |t: f64| (t.abs() / 3000.0).min(1.0).powf(1.5);
                 let lps = burn_max / 3600.0;
                 state.fuel_port_l =
-                    (state.fuel_port_l - lps * frac(state.control.thrust_port) * dt).max(0.0);
+                    (state.fuel_port_l - lps * frac(burn_port) * dt).max(0.0);
                 state.fuel_stbd_l =
-                    (state.fuel_stbd_l - lps * frac(state.control.thrust_stbd) * dt).max(0.0);
+                    (state.fuel_stbd_l - lps * frac(burn_stbd) * dt).max(0.0);
             }
             // Steering priority (backend, tab-proof):
             //   1. FRESH route guidance from SignalK/OpenCPN (< 15 s old) —
@@ -598,11 +609,17 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 state.control.helm
             };
+            // Engine override wins over the browser tab's thrust posts (same
+            // tab-proof rationale as the rudder). Fuel gate still applies.
+            let (cmd_port, cmd_stbd) = match state.ap_thrust_n {
+                Some(t) => (t, t),
+                None => (state.control.thrust_port, state.control.thrust_stbd),
+            };
             let ctrl_phys = cat_physics::CatControl {
                 rudder_cmd: effective_helm * params.rudder_max,
                 sail_trim: cat_physics::sail_trim_to_sheet_rad(state.control.sail_trim),
-                thrust_port: if state.fuel_port_l > 0.0 { state.control.thrust_port } else { 0.0 },
-                thrust_stbd: if state.fuel_stbd_l > 0.0 { state.control.thrust_stbd } else { 0.0 },
+                thrust_port: if state.fuel_port_l > 0.0 { cmd_port } else { 0.0 },
+                thrust_stbd: if state.fuel_stbd_l > 0.0 { cmd_stbd } else { 0.0 },
                 traveler: state.control.traveler,
             };
 
@@ -955,9 +972,15 @@ async fn post_course(
     body: Option<Json<CourseInput>>,
 ) -> Json<FullSimState> {
     let mut current = state.sim_state.write().unwrap();
-    current.ap_heading_deg = body
-        .and_then(|Json(c)| c.heading_true_deg)
-        .map(|h| h.rem_euclid(360.0));
+    match body.and_then(|Json(c)| c.heading_true_deg) {
+        Some(h) => current.ap_heading_deg = Some(h.rem_euclid(360.0)),
+        None => {
+            // Empty body = the UI "Take Helm" button: full manual return,
+            // release rudder AND engine overrides.
+            current.ap_heading_deg = None;
+            current.ap_thrust_n = None;
+        }
+    }
     Json(current.clone())
 }
 
