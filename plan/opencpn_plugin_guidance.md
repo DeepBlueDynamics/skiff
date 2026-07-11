@@ -4,13 +4,13 @@ Kord's call: keystroke/click injection ("fake plugin") got us pan/zoom/screensho
 but it can't create or activate routes, it steals focus, and it dies whenever a
 human is using the desktop. To *fully* twiddle OpenCPN we go in-process: a real
 C++ plugin that exposes a local control API, with the existing MCP server
-(`opencpn-mcp/server.js` on the Windows box) rewired to call it. Agents keep the
+(`opencpn/mcp/server.js` on the Windows box) rewired to call it. Agents keep the
 same MCP contract; the transport under it changes from SendKeys to HTTP.
 
 ## Architecture (3 layers, only the bottom one is new)
 
 ```
-agents ──MCP stdio──► opencpn-mcp/server.js (Node, exists)
+agents ──MCP stdio──► opencpn/mcp/server.js (Node, exists)
                             │  swap tool impls: SendKeys → HTTP
                             ▼
                     ocpn_bridge_pi  (NEW: C++ plugin in OpenCPN's process)
@@ -83,7 +83,7 @@ migrates to the bridge.
 2. `/view/jump` — kills the focus-steal problem for chart control immediately.
 3. `/route` create + list + delete.
 4. Activation (verify API call; else apRoute-style guidance + UDP to :10110/10111).
-5. I rewire `opencpn-mcp/server.js` tools to the bridge and re-verify the
+5. I rewire `opencpn/mcp/server.js` tools to the bridge and re-verify the
    Kord demo end-to-end: MCP create route → activate → Pi boat turns.
 
 Division of labor: you own the C++ plugin repo + CI; I own the Windows-side
