@@ -2,7 +2,7 @@
 
 # Skiff
 
-**A server-authoritative Lagoon 450S sailing simulator and isochrone-routing research platform.**
+**A server-authoritative 6-DoF Vessel and PNT Sensor Simulation.**
 
 ![Version](https://img.shields.io/badge/version-0.1.0-555)
 ![Rust](https://img.shields.io/badge/Rust-2024-000?logo=rust)
